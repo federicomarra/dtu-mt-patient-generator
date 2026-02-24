@@ -1,13 +1,21 @@
+# Export file functions
+
+# Library imports
 import pandas as pd
 from pathlib import Path
 
-def export_to_formats(results_dict, n_patients, output_folder, export: list[bool] = [True, False]):
+# File imports
+from src.input import minutes_to_time
+
+# Export functions
+def export_to_formats(results_dict: dict, n_patients: int, n_days: int, output_folder: Path, export: list[bool] = [True, False]):
     """
     Exports simulation results to both Parquet and CSV files.
 
     Parameters:
     results_dict (dict): The nested dictionary containing patient results.
     n_patients (int): Number of patients simulated.
+    n_days (int): Number of days simulated.
     output_folder (Path): The directory where the files will be saved.
     """
     records = []
@@ -18,14 +26,15 @@ def export_to_formats(results_dict, n_patients, output_folder, export: list[bool
             # values is a numpy array of BG for each minute
             for minute, bg in enumerate(values):
                 records.append({
-                    "patient_id": p_id,
+                    "patient_id": f"{p_id:06d}",
                     "day": day,
                     "minute": minute,
+                    "time": minutes_to_time(minute),
                     "blood_glucose": bg
                 })
     
     df = pd.DataFrame(records)
-    base_file_name = f"results_{n_patients}_patients"
+    base_file_name = f"results_{n_patients}p_{n_days}d"
     parquet_path = Path(output_folder) / f"{base_file_name}.parquet"
     csv_path = Path(output_folder) / f"{base_file_name}.csv"
     

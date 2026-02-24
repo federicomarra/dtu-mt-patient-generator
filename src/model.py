@@ -1,9 +1,13 @@
 # Library Imports
 import numpy as np
 
+
+# File imports
 from src.sensor import measure_glycemia
 
-def state_listify(Q1: float, Q2: float, S1, S2, I, x1, x2, x3, D1, D2) -> list[float]:
+
+# Helper functions
+def state_listify(Q1: float, Q2: float, S1: float, S2: float, I: float, x1: float, x2: float, x3: float, D1: float, D2: float) -> list[float]:
     """Helper function to pack state variables into a numpy array for ODE solvers."""
     x = {
         'Q1': Q1, 'Q2': Q2,
@@ -20,6 +24,8 @@ def state_unlistify(x):
     return Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
 
 
+
+# Model equations
 def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
     """
     Standard Hovorka Model ODEs.
@@ -135,6 +141,7 @@ def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
 
 
 
+# Initial state functions
 def compute_initial_state_from_insulin(us: float, params: dict) -> list:
     BW = params['BW']      # [kg] body weight
     tauI = params['tauI']  # [min] maximum insulin absorption time
@@ -180,6 +187,8 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
     )
 
 
+
+# Steady state functions
 def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> list:
     if international_units:
         tolerance = 0.1
@@ -188,8 +197,8 @@ def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: d
         desired_glycemia = desired_glycemia / (params['MwG'] / 10)
 
     # Initial guess for insulin
-    I = 1500    # [mU]
-    I_offset = 1000
+    I = 1500        # [mU]
+    I_offset = 100  # [mU]
 
     if print_progress:
         print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
@@ -319,6 +328,6 @@ if __name__ == "__main__":
     print("Get steady state testing")
     #from parameters import generate_monte_carlo_patients
     #p = generate_monte_carlo_patients(1, standard_patient=True)[0]
-    from src.parameters import get_base_params
+    from parameters import get_base_params
     p = get_base_params()
     compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100000, print_progress=True)

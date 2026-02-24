@@ -68,7 +68,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         if GEMINI:
             x0_curr = [800, 800, 100, 100, 10, 0, 0, 0, 0, 0]
         else:
-            x0_curr = compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=10, print_progress=False)
+            x0_curr = compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100, print_progress=False)
         
         for day in range(n_days):
             scenario = 1  #TODO: Implement multiple scenarios
@@ -105,7 +105,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
             patient_days[day] = y_day
             results_list.append(y_day)
 
-    if any(do_export): export_to_formats(results_tot, n_patients, now_sim_folder_path, do_export)
+    if any(do_export): export_to_formats(results_tot, n_patients, n_days, now_sim_folder_path, do_export)
 
     # Plot Mean
     if results_list:
@@ -113,7 +113,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         # Note: plotting mean for only the first day if we want to show population average per day
         plt.plot(t_eval[1:] / 60, mean_bg, color='black', linewidth=2, label='Mean Population BG (Day 1)')
 
-    # Formatting
+    # Formatting and saving plot
     if international_unit:
         plt.axhline(3.8, color='r', linestyle='--', label='Hypoglycemia Limit')
         plt.axhline(10, color='y', linestyle='--', label='Hyperglycemia Limit')
@@ -126,22 +126,24 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         plt.ylabel("Blood Glucose (mg/dL)")
     plt.title(f"Hovorka Model: Monte Carlo Simulation (n patients={n_patients}, n days={n_days})")
     plt.xlabel("Time (hours)")
-    plt.xticks(np.arange(0, (24) + 1, 24))
-    plt.xlim(0, 24)
+    plt.xticks(np.arange(0, (24 * n_days) + 1, (24 / 8) * n_days))
+    plt.xlim(0, 24 * n_days)
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.show()
 
+    plt.savefig(now_sim_folder_path / "simulation_plot.png")
+
 
 if __name__ == "__main__":
-    skipTerminal = True
-    EXPORT = [False, True]  # [export_to_parquet, export_to_csv]
-    INTERNATIONAL_UNIT = True
-    N_PATIENTS = 10
-    N_DAYS = 7
+    skipTerminal: bool = True         # Skip terminal input and use default values
+    EXPORT: list[bool] = [False, True]      # [export_to_parquet, export_to_csv]
+    INTERNATIONAL_UNIT: bool = True   # True for mmol/L, False for mg/dL
+    N_PATIENTS: int = 1             # Number of patients to simulate
+    N_DAYS: int = 1                  # Number of days to simulate for each patient
 
     if not skipTerminal:
-        unit_answer = input("Do you prefer international unit: mmol/L instead of mg/dL? (y/n): ").strip().lower()
+        unit_answer: str = input("Do you prefer international unit: mmol/L instead of mg/dL? (y/n): ").strip().lower()
         INTERNATIONAL_UNIT = not (unit_answer in {"n", "no", "0", "false", "f", "nope", "mgdl", "mg/dl"})
         N_PATIENTS = int(input("How many patients do you want to simulate? "))
         N_DAYS = int(input("How many days do you want to simulate for each patient? "))

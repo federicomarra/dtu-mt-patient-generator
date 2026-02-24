@@ -7,6 +7,12 @@ def ttm(h: int, m: int) -> int:
     """Convert hours and minutes to total minutes."""
     return h * 60 + m
 
+def minutes_to_time(minutes: int) -> str:
+    """Convert total minutes to HH:MM format."""
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours:02d}:{mins:02d}"
+
 
 def scenario_normal(t, b):
     u = b  # Start with basal insulin

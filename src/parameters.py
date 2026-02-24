@@ -34,7 +34,7 @@ def get_base_params():
     }
 
 
-def generate_monte_carlo_patients(n=10):
+def generate_monte_carlo_patients(n=10, standard_patient=False):
     """
     Generates N patients by perturbing sensitivity parameters
     using a Log-Normal distribution (prevents negative values).
@@ -46,43 +46,46 @@ def generate_monte_carlo_patients(n=10):
         p = base.copy()
         # Randomize Insulin Sensitivities (kb1, kb2, kb3)
         # CV of 30% is typical for inter-patient variability
-        p['kb1'] = np.random.lognormal(np.log(base['kb1']), 0.3)
-        p['kb2'] = np.random.lognormal(np.log(base['kb2']), 0.3)
-        p['kb3'] = np.random.lognormal(np.log(base['kb3']), 0.3)
+        if not standard_patient:
+            p['kb1'] = np.random.lognormal(np.log(base['kb1']), 0.3)
+            p['kb2'] = np.random.lognormal(np.log(base['kb2']), 0.3)
+            p['kb3'] = np.random.lognormal(np.log(base['kb3']), 0.3)
 
-        # Glucose Parameters (Normal Distributions)
-        p['EGP0'] = np.random.normal(0.0161, 0.0039)
-        p['F01'] = np.random.normal(0.0097, 0.0022)
-        p['k12'] = np.random.normal(0.0649, 0.0282)
+            # Glucose Parameters (Force positive)
+            p['EGP0'] = np.abs(np.random.normal(0.0161, 0.0039))
+            p['F01'] = np.abs(np.random.normal(0.0097, 0.0022))
+            p['k12'] = np.abs(np.random.normal(0.0649, 0.0282))
 
-        # Activation rates (ka)
-        p['ka1'] = np.random.normal(0.0055, 0.0056)
-        p['ka2'] = np.random.normal(0.0683, 0.0507)
-        p['ka3'] = np.random.normal(0.0304, 0.0235)
+            # Activation rates (ka) - Force positive
+            p['ka1'] = np.abs(np.random.normal(0.0055, 0.0056))
+            p['ka2'] = np.abs(np.random.normal(0.0683, 0.0507))
+            p['ka3'] = np.abs(np.random.normal(0.0304, 0.0235))
 
-        # Insulin Sensitivities (SI)
-        p['SI1'] = np.random.normal(51.2, 32.09)
-        p['SI2'] = np.random.normal(8.2, 7.84)
-        p['SI3'] = np.random.normal(520.0, 306.2)
+            # Insulin Sensitivities (SI)
+            p['SI1'] = np.random.normal(51.2, 32.09)
+            p['SI2'] = np.random.normal(8.2, 7.84)
+            p['SI3'] = np.random.normal(520.0, 306.2)
 
-        # Elimination and Volumes
-        p['ke'] = np.random.normal(0.14, 0.035)
-        p['VI'] = np.random.normal(0.12, 0.012)
+            # Elimination and Volumes
+            p['ke'] = np.abs(np.random.normal(0.14, 0.035))
+            p['VI'] = np.abs(np.random.normal(0.12, 0.012))
 
-        # VG is derived from: exp(VG) ~ N(1.16, 0.23^2)
-        # We sample the normal distribution first, then take the log
-        p['VG'] = np.log(np.random.normal(1.16, 0.23))
+            # VG is derived from: exp(VG) ~ N(1.16, 0.23^2)
+            # We sample the normal distribution, ensure it's positive, then take the log
+            # Note: VG must be > 0, so the normal sample must be > 1.
+            vg_sample = np.random.normal(1.16, 0.23)
+            p['VG'] = np.log(max(1.01, vg_sample))
 
-        # Time constants (tau)
-        # tau_I is derived from: 1/tau_I ~ N(0.018, 0.0045^2)
-        p['tauI'] = 1 / np.random.normal(0.018, 0.0045)
+            # Time constants (tau)
+            # tau_I is derived from: 1/tau_I ~ N(0.018, 0.0045^2)
+            p['tauI'] = 1 / np.random.normal(0.018, 0.0045)
 
-        # tau_G is derived from: ln(tau_G) ~ N(3.689, 0.25^2)
-        p['tauG'] = np.exp(np.random.normal(3.689, 0.25))
+            # tau_G is derived from: ln(tau_G) ~ N(3.689, 0.25^2)
+            p['tauG'] = np.exp(np.random.normal(3.689, 0.25))
 
-        # Carbohydrate Bioavailability and Body Weight (Uniform Distributions)
-        p['Ag'] = np.random.uniform(0.7, 1.2)
-        p['BW'] = np.random.uniform(65, 95)
+            # Carbohydrate Bioavailability and Body Weight (Uniform Distributions)
+            p['Ag'] = np.random.uniform(0.7, 1.2)
+            p['BW'] = np.random.uniform(65, 95)
 
         patients.append(p)
     return patients
@@ -129,8 +132,8 @@ def generate_monte_carlo_patients_gemini(n=10):
         p['kb2'] = np.random.lognormal(np.log(base['kb2']), 0.3)
         p['kb3'] = np.random.lognormal(np.log(base['kb3']), 0.3)
 
-        # Randomize Meal Absorption time slightly
-        p['tauG'] = np.random.normal(base['tauG'], 5)
+        # Randomize Meal Absorption time slightly, ensure it's positive
+        p['tauG'] = np.abs(np.random.normal(base['tauG'], 5))
 
         patients.append(p)
     return patients

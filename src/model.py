@@ -1,9 +1,26 @@
 # Library Imports
-from typing import Any
-
 import numpy as np
 
-def hovorka_equations(t, x, params, input_func, scenario):
+from src.sensor import measure_glycemia
+
+def state_listify(Q1: float, Q2: float, S1, S2, I, x1, x2, x3, D1, D2) -> list[float]:
+    """Helper function to pack state variables into a numpy array for ODE solvers."""
+    x = {
+        'Q1': Q1, 'Q2': Q2,
+        'S1': S1, 'S2': S2,
+        'I': I,
+        'x1': x1, 'x2': x2, 'x3': x3,
+        'D1': D1, 'D2': D2
+    }
+    return [x["Q1"], x["Q2"], x["S1"], x["S2"], x["I"], x["x1"], x["x2"], x["x3"], x["D1"], x["D2"]]
+
+def state_unlistify(x):
+    """Helper function to unpack state variables from a list."""
+    Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
+    return Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
+
+
+def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
     """
     Standard Hovorka Model ODEs.
     States x: [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
@@ -110,11 +127,98 @@ def hovorka_equations(t, x, params, input_func, scenario):
     # [1/min] = [1/min * L/mU] * [mU/L] - [1/min] * [1]
     dx3 = kb3 * I - ka3 * x3
 
+    #dx_t = state_listify(Q1=dQ1, Q2=dQ2, S1=dS1, S2=dS2, I=dI, x1=dx1, x2=dx2, x3=dx3, D1=dD1, D2=dD2)
+
+    #return state_unlistify(dx_t)
 
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
 
 
 
+def compute_initial_state_from_insulin(us: float, params: dict) -> list:
+    BW = params['BW']      # [kg] body weight
+    tauI = params['tauI']  # [min] maximum insulin absorption time
+    ke = params['ke']      # [1/min] insulin elimination rate from plasma
+    VI = params['VI']      # [L/kg] insulin distribution volume
+    SI1 = params['SI1']    # [1/min*(mU/L)] insulin sensitivity of distribution/transport
+    SI2 = params['SI2']    # [1/min*(mU/L)] insulin sensitivity of disposal
+    SI3 = params['SI3']    # [L/mU]         insulin sensitivity of EGP
+    EGP0 = params['EGP0']  # [mmol/kg/min] endogenous glucose production extrapolated to zero insulin concentration
+    F01 = params['F01']    # [mmol/kg/min] non–insulin-dependent glucose flux (per kg)
+    k12 = params['k12']    # [1/min] transfer rate between non-accessible and accessible glucose compartments
+
+    Seq = tauI * us                    # [mU] = [min] * [mU/min]
+    Ieq = Seq / (ke * tauI * VI * BW)  # [mU/L] = [mU/min] * [1/min] * [kg/L] * [1/kg] * [min]
+    x1eq = SI1 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
+    x2eq = SI2 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
+    x3eq = SI3 * Ieq                   # [1] = [L/mU] * [mU/L]
+
+    # -x1*Q1 + k12*Q2 = F01 + EGP0(x3-1) * BW
+    # x1*Q1 - (k12 + x2)*Q2 = 0
+    b1 = (EGP0 * BW * (x3eq - 1)) + F01  # [mmol/min] = [mmol/kg/min] * [kg] * [1]
+    a11 = -x1eq                          # [1/min]
+    a12 = k12                            # [1/min]
+    # b2 = 0                             # [mmol/min]
+    a21 = x1eq                           # [1/min]
+    a22 = - k12 - x2eq                   # [1/min]
+
+    Q1eq = b1 / (a11 - (a12 * a21 / a22))  # [mmol] = [mmol/min] / [1/min]
+
+    Q2eq = - a21 * Q1eq / a22              # [mmol] = [1/min] * [mmol] / [1/min]
+
+    return state_listify(
+        Q1=Q1eq,   # [mmol] glucose in blood
+        Q2=Q2eq,   # [mmol] glucose in muscles
+        S1=Seq,    # [mU] insulin absorption in first adipose tissue
+        S2=Seq,    # [mU] insulin absorption in second adipose tissue
+        I=Ieq,     # [mU/L] insulin in plasma,
+        x1=x1eq,   # [1/min] insulin action on glucose transport
+        x2=x2eq,   # [1/min] insulin action on glucose disposal
+        x3=x3eq,   # [1] insulin action on endogenous glucose production (liver)
+        D1=0,      # [mmol] glucose absorption in the stomach
+        D2=0,      # [mmol] glucose absorption in the intestine
+    )
+
+
+def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> list:
+    if international_units:
+        tolerance = 0.1
+    else:
+        tolerance = 1
+        desired_glycemia = desired_glycemia / (params['MwG'] / 10)
+
+    # Initial guess for insulin
+    I = 1500    # [mU]
+    I_offset = 1000
+
+    if print_progress:
+        print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
+
+    x0 = compute_initial_state_from_insulin(I, params)
+
+    # Cycle until good glycemia is achieved
+    for i in range(max_iterations):
+
+        x0 = compute_initial_state_from_insulin(I, params)
+        G = measure_glycemia(x0, params)
+
+        if print_progress: print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], I= {I:.2f} [mU/L]")
+
+        if np.abs(G - desired_glycemia) < tolerance:
+            return x0
+        if G > desired_glycemia:
+            I += I_offset
+        else:
+            I -= I_offset
+        #I_offset *= 0.95
+        #if I <= 0:
+        #    break
+
+    return x0
+
+
+    
+    
 
 
 
@@ -206,3 +310,15 @@ def hovorka_equations_gemini(t, x, params, input_func, scenario=1):
     dD2 = D1 / tauG - D2 / tauG
 
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
+
+
+
+
+
+if __name__ == "__main__":
+    print("Get steady state testing")
+    #from parameters import generate_monte_carlo_patients
+    #p = generate_monte_carlo_patients(1, standard_patient=True)[0]
+    from src.parameters import get_base_params
+    p = get_base_params()
+    compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100000, print_progress=True)

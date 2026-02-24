@@ -1,17 +1,12 @@
 import numpy as np
 
-def measure_glycemia(sol, params, noise_std=0.0):
+def measure_glycemia(x, params, noise_std=0.0) -> float:
     """
     param sol:
     param params:
     param noise_std:
     return:
     """
-    # Extract the current state from the solution
-    # t = sol.t
-    x = sol.y
-
-    #print(f"Sensor Event at time {t[-1]:.2f} minutes: State = {x[:, -1]}")
 
     Q1 = x[0]           # [mmol] glucose in blood
     VG = params["VG"]   # [L / kg] glucose distribution volume

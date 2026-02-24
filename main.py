@@ -1,31 +1,45 @@
 # Hovorka Model Monte Carlo Simulation
 
 # Library Imports
+from __future__ import annotations
+from typing import Dict, List
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
-import pandas as pd
+#import pandas as pd
+
+GEMINI = False
 
 # --- 1. The Hovorka Model Equations ---
-from model import hovorka_equations_gemini as hovorka_equations
+if GEMINI:
+    from src.model import hovorka_equations_gemini as hovorka_equations
+else:
+    from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose
 
 # --- 2. Simulation Helpers ---
-from parameters import generate_monte_carlo_patients_gemini as generate_monte_carlo_patients
+if GEMINI:
+    from src.parameters import generate_monte_carlo_patients_gemini as generate_monte_carlo_patients
+else:
+    from src.parameters import generate_monte_carlo_patients
 
 # --- 3. Scenario Definition ---
-from input import scenario_inputs_gemini as scenario_inputs
-from input import N_SCENARIOS
+if GEMINI:
+    from src.input import scenario_inputs_gemini as scenario_inputs
+else:
+    from src.input import scenario_inputs
+from src.input import N_SCENARIOS
 
-from sensor import measure_glycemia
+from src.sensor import measure_glycemia
 
-from export import export_to_parquet
+from src.export import export_to_formats
+
 
 # --- 4. Main Simulation Loop ---
-def run_simulation(export=True, international_unit=True, n_patients=100, n_days=7):
-    if export:
+def run_simulation(do_export: list[bool] = [True, False], international_unit: bool = True, n_patients: int = 100, n_days: int = 7):
+    if any(do_export):
         folder_name = "monte_carlo_results"
         folder_path = Path(folder_name)
         folder_path.mkdir(parents=True, exist_ok=True)
@@ -36,69 +50,84 @@ def run_simulation(export=True, international_unit=True, n_patients=100, n_days=
     patients = generate_monte_carlo_patients(n_patients)
 
     # Time span for 24 hours
-    minutes_per_day = int(24 * 60)  # Total minutes in a day based on time step
-    t_span = (0, minutes_per_day)  # 24 hours
-    t_eval = np.linspace(0, minutes_per_day, minutes_per_day)  # 1 point per minute
-
-    # Initial Conditions (Steady State approximations)
-    # Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
-    # Assume starting glucose ~ 100 mg/dL -> Q1 = 100 * VG / 10 (approx conversion)
-    # This is a rough initialization. Real simulations usually run a "burn-in" period.
-    x0 = [800, 800, 100, 100, 10, 0, 0, 0, 0, 0]
+    minutes_per_day = int(24 * 60)
+    t_eval = np.linspace(0, minutes_per_day, minutes_per_day + 1)  # 0 to 1440 inclusive
 
     plt.figure(figsize=(12, 6))
 
-    results_tot = {}
+    results_tot: Dict[int, dict] = {}
+    results_list: List[np.ndarray] = []
 
     print(f"Running Monte Carlo Simulation for {n_patients} patients...")
     desc_text = "\033[34mSimulating patients\033[0m"
     for i, p in enumerate(tqdm(patients, desc=desc_text, unit="patient", colour="blue")):
-    #for i, p in enumerate(patients):
-        results_patient = []
+        results_tot[i] = {"patient_id": i, "params": p, "days": {}}
+        
+        # Initial Conditions for each patient
+        # Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
+        if GEMINI:
+            x0_curr = [800, 800, 100, 100, 10, 0, 0, 0, 0, 0]
+        else:
+            x0_curr = compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=10, print_progress=False)
+        
         for day in range(n_days):
-            # Create lambda for the ODE solver with specific patient params
             scenario = 1  #TODO: Implement multiple scenarios
-            #scenario = np.random.uniform(1, N_SCENARIOS)  # Randomly select a scenario for this day
+            #scenario = np.random.randint(1, N_SCENARIOS + 1) # Randomly select a scenario for this day
+            
+            # Accumulate time offset for plotting
+            t_offset = day * minutes_per_day
+            
             fx = lambda t, x: hovorka_equations(t, x, p, scenario_inputs, scenario)
+            
+            y_day = []
+            # Solving step-by-step as per MATLAB code
+            for k in range(len(t_eval) - 1):
+                t_start = t_eval[k]
+                t_end = t_eval[k+1]
+                
+                sol = solve_ivp(fx, (t_start, t_end), x0_curr, method='RK45')
+                x0_curr = sol.y[:, -1]
+                
+                # Measure glycemia at the end of the step
+                y_val = measure_glycemia(x0_curr, p, noise_std=0.01)
+                y_day.append(y_val)
+            
+            y_day = np.array(y_day)
+            
+            if not international_unit: y_day = y_day * (p['MwG'] / 10)  # Convert to mg/dL
+            
+            # Plot in hours: (minutes + offset) / 60
+            plt.plot((t_eval[1:] + t_offset) / 60, y_day, color='blue', alpha=0.15)
 
-            sol = solve_ivp(fx, t_span, x0, t_eval=t_eval, method='RK45')
+            # Store results for export
+            patient_results = results_tot[i]
+            patient_days = patient_results["days"]
+            patient_days[day] = y_day
+            results_list.append(y_day)
 
-            print(sol.message)
-
-            # Calculate BG in mg/dL (Q1 / VG) * conversion factor if needed
-            # Q1 is mass (usually mmol or mg depending on units used in params).
-            # In standard Hovorka, Q is mmol, but here we treat mass generically.
-            # Let's assume output needs scaling to mg/dL.
-            # BG = Q1 / VG. If Q1 is mmol and VG is L, BG is mmol/L.
-            # To get mg/dL, multiply by 18.
-
-            #y = (sol.y[0] / p['VG'])
-            y = measure_glycemia(sol, p, noise_std=0.01)  # Add some sensor noise
-            if not international_unit: y *= 180.16 / 10  # Convert to mmol/L
-
-            plt.plot(sol.t / 60, y, color='blue', alpha=0.15)
-            results_patient.append(y)
-        results_tot.append(results_patient)
-
-        if export: export_to_parquet(results_patient, i, now_sim_folder_path)
+    if any(do_export): export_to_formats(results_tot, n_patients, now_sim_folder_path, do_export)
 
     # Plot Mean
-    mean_bg = np.mean(results_patient, axis=0)
-    plt.plot(t_eval/60, mean_bg, color='black', linewidth=2, label='Mean Population BG')
+    if results_list:
+        mean_bg = np.mean(results_list, axis=0)
+        # Note: plotting mean for only the first day if we want to show population average per day
+        plt.plot(t_eval[1:] / 60, mean_bg, color='black', linewidth=2, label='Mean Population BG (Day 1)')
 
     # Formatting
     if international_unit:
         plt.axhline(3.8, color='r', linestyle='--', label='Hypoglycemia Limit')
         plt.axhline(10, color='y', linestyle='--', label='Hyperglycemia Limit')
+        plt.ylim(0, 20)
         plt.ylabel("Blood Glucose (mmol/l)")
     else:
         plt.axhline(70, color='r', linestyle='--', label='Hypoglycemia Limit')
         plt.axhline(180, color='y', linestyle='--', label='Hyperglycemia Limit')
+        plt.ylim(0, 500)
         plt.ylabel("Blood Glucose (mg/dL)")
-    plt.title(f"Hovorka Model: Monte Carlo Simulation (N={n_patients})")
+    plt.title(f"Hovorka Model: Monte Carlo Simulation (n patients={n_patients}, n days={n_days})")
     plt.xlabel("Time (hours)")
-    plt.xticks(np.arange(0, 25, 1))
-    plt.xlim(0, 24 * n_days)
+    plt.xticks(np.arange(0, (24) + 1, 24))
+    plt.xlim(0, 24)
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.show()
@@ -106,10 +135,10 @@ def run_simulation(export=True, international_unit=True, n_patients=100, n_days=
 
 if __name__ == "__main__":
     skipTerminal = True
-    EXPORT = False
+    EXPORT = [False, True]  # [export_to_parquet, export_to_csv]
     INTERNATIONAL_UNIT = True
-    N_PATIENTS = 20
-    N_DAYS = 3
+    N_PATIENTS = 10
+    N_DAYS = 7
 
     if not skipTerminal:
         unit_answer = input("Do you prefer international unit: mmol/L instead of mg/dL? (y/n): ").strip().lower()
@@ -117,4 +146,4 @@ if __name__ == "__main__":
         N_PATIENTS = int(input("How many patients do you want to simulate? "))
         N_DAYS = int(input("How many days do you want to simulate for each patient? "))
 
-    run_simulation(export=EXPORT, international_unit=INTERNATIONAL_UNIT, n_patients=N_PATIENTS, n_days=N_DAYS)
+    run_simulation(do_export=EXPORT, international_unit=INTERNATIONAL_UNIT, n_patients=N_PATIENTS, n_days=N_DAYS)

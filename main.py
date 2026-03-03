@@ -15,7 +15,7 @@ GEMINI = False
 
 # --- 1. The Hovorka Model Equations ---
 if GEMINI:
-    from src.model import hovorka_equations_gemini as hovorka_equations
+    from src.model import compute_optimal_steady_state_from_glucose, hovorka_equations_gemini as hovorka_equations
 else:
     from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose
 

@@ -1,3 +1,5 @@
+import numpy as np
+
 N_SCENARIOS = 6  # Number of different input scenarios (e.g., different meal times, insulin doses)
 
 def time_to_minutes(h: int, m: int) -> int:

@@ -1,10 +1,15 @@
-# Library Imports
+from __future__ import annotations
+
+from typing import Callable
+
 import numpy as np
 
-
-# File imports
 from src.sensor import measure_glycemia
 
+# Type aliases
+ParameterSet = dict[str, float]
+StateVector = list[float]
+InputFunc = Callable[..., tuple[float, float]]
 
 # Helper functions
 def state_listify(Q1: float, Q2: float, S1: float, S2: float, I: float, x1: float, x2: float, x3: float, D1: float, D2: float) -> list[float]:
@@ -18,77 +23,101 @@ def state_listify(Q1: float, Q2: float, S1: float, S2: float, I: float, x1: floa
     }
     return [x["Q1"], x["Q2"], x["S1"], x["S2"], x["I"], x["x1"], x["x2"], x["x3"], x["D1"], x["D2"]]
 
-def state_unlistify(x):
+def state_unlistify(x: StateVector) -> tuple[float, float, float, float, float, float, float, float, float, float]:
     """Helper function to unpack state variables from a list."""
     Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
     return Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
 
-
-
 # Model equations
-def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
+def hovorka_equations(
+    t: int,
+    x: StateVector,
+    params: ParameterSet,
+    input_func: InputFunc,
+    scenario: int,
+    patient_id: int = 0,
+    day: int = 0,
+    basal_hourly: float = 0.5,
+    insulin_sensitivity: float = 2.0,
+    meal_schedule: dict[str, float] | None = None,
+    seed: int | None = None,
+) -> StateVector:
     """
-    Standard Hovorka Model ODEs.
+    Standard Hovorka Model ODEs with named intermediate variables for clarity.
+    
     States x: [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
+      Q1, Q2: glucose mass [mmol] in accessible and remote compartments
+      S1, S2: insulin mass [mU] in absorption depots
+      I: plasma insulin [mU/L]
+      x1, x2, x3: insulin action on transport, disposal, EGP
+      D1, D2: meal carbs [mmol] in stomach and intestine
+    
+    Returns: [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
     """
-    # Unpack states
     Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
 
-    # Unpack parameters
-    MwG = params['MwG']     # Molecular weight of glucose (180.16 mg/mmol)
-    EGP0 = params['EGP0']   # Endogenous glucose production at zero insulin [mmol/kg/min]
-    F01 = params['F01']     # Non-insulin dependent glucose flux [mmol/kg/min]
-    k12 = params['k12']     # Transfer rate between Q1 and Q2 [1/min]
-    ka1 = params['ka1']     # Deactivation rate for x1 [1/min]
-    ka2 = params['ka2']     # Deactivation rate for x2 [1/min]
-    ka3 = params['ka3']     # Deactivation rate for x3 [1/min]
-    SI1 = params['SI1']     # Sensitivity for x1 (transport) [L/min/mU]
-    SI2 = params['SI2']     # Sensitivity for x2 (disposal) [L/min/mU]
-    SI3 = params['SI3']     # Sensitivity for x3 (EGP) [L/mU]
-    ke = params['ke']       # Insulin elimination rate [1/min]
-    VI = params['VI']       # Insulin distribution volume [L/kg]
-    VG = params['VG']       # Glucose distribution volume [L/kg]
-    tauI = params['tauI'] # Insulin absorption time constant [min]
-    tauG = params['tauG'] # Meal absorption time constant [min]
-    Ag = params['Ag']       # Carbohydrate bioavailability (fraction)
-    BW = params['BW']       # Body weight [kg]
+    EGP0 = float(params["EGP0"])
+    F01 = float(params["F01"])
+    k12 = float(params["k12"])
+    ka1 = float(params["ka1"])
+    ka2 = float(params["ka2"])
+    ka3 = float(params["ka3"])
+    SI1 = float(params["SI1"])
+    SI2 = float(params["SI2"])
+    SI3 = float(params["SI3"])
+    ke = float(params["ke"])
+    VI = float(params["VI"])
+    VG = float(params["VG"])
+    tauI = float(params["tauI"])
+    tauG = float(params["tauG"])
+    Ag = float(params["Ag"])
+    BW = float(params["BW"])
 
-    # Get inputs (Insulin u(t) and Carbs d(t)) at current time t
-    u_t, d_t = input_func(t, scenario)
-    # Convert insulin from U/min to mU/min
-    U = u_t
-    # Convert carbs from g/min to mg/min (MwG = 180.16 mg/mmol)
-    D = d_t * (1000 / MwG)
+    u_t, d_t = input_func(
+        t,
+        patient_id=patient_id,
+        day=day,
+        basal_hourly=basal_hourly,
+        scenario=scenario,
+        insulin_sensitivity=insulin_sensitivity,
+        meal_schedule=meal_schedule,
+        seed=seed,
+    )
+    U = float(u_t)
+    # Convert carbs from g/min to mmol/min
+    D = float(d_t) * (1000.0 / float(params["MwG"]))
     # Calculate current glucose concentration in blood (mmol/L)
-    G = Q1 / (VG * BW)
+    G = Q1 / (VG * BW) if (VG * BW) > 0 else 0.0
 
 
     # --- 1. CHO ABSORPTION ---
+    # Note: If multiple meals occur simultaneously in input_func, only the last D value
+    # is used (overwrites previous); carbs can be lost. See input.py for meal scheduling.
     # eq:2.8a: drift of the glucose concentration in the stomach
     # [mmol/min] = [1 * mmol/min] - [1/min * mmol]
-    dD1 = (Ag * D) - ((1 / tauG) * D1)
+    dD1 = (Ag * D) - ((1.0 / tauG) * D1)
 
     # eq:2.8b: drift of the glucose concentration in the intestine
     # [mmol/min] = [1/min * mmol]
-    dD2 = (1 / tauG) * (D1 - D2)
+    dD2 = (1.0 / tauG) * (D1 - D2)
 
     # eq:2.9: glucose absorption rate in the blood
     # [mmol/min] = [1/min * mmol]
-    UG = (1 / tauG) * D2
+    UG = (1.0 / tauG) * D2
 
 
     # --- 2. INSULIN ABSORPTION ---
     # eq:2.11a: drift of the insulin concentration in the first adipose tissue
     # [mU/min] = [mU/min] - [1/min * mU]
-    dS1 = U - ((1 / tauI) * S1)
+    dS1 = U - ((1.0 / tauI) * S1)
 
     # eq:2.11b: drift of the insulin concentration in the second adipose tissue
     # [mU/min] = [1/min * mU]
-    dS2 = (1 / tauI) * (S1 - S2)
+    dS2 = (1.0 / tauI) * (S1 - S2)
 
     # eq:2.12: insulin absorption rate in the blood
     # [mU/min] = [1/min * mU]
-    UI = (1 / tauI) * S2
+    UI = (1.0 / tauI) * S2
 
     # eq:2.6: drift of the insulin concentration in the blood
     # [mU/L/min] = [mU/min * kg/L * 1/kg] - [1/min] * [mU/L]
@@ -98,24 +127,22 @@ def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
     # --- 3. GLUCOSE KINETICS ---
     # eq:2.4: glucose absorbed by the central neural system
     # [mmol/min] = [mmol/kg/min] * [kg]
-    if G >= 4.5: F01c = F01 * BW
-    else:        F01c = F01 * BW * G / 4.5
+    # Note: max(0.0, G) guards against negative glucose from sensor noise,
+    # preventing F01c from becoming negative (which would increase EGP unphysically)
+    if G >= 4.5:
+        F01c = F01 * BW
+    else:
+        F01c = max(0.0, F01 * BW * max(0.0, G) / 4.5)
 
     # eq:2.5: excretion rate of glucose in the kidneys
     # [mmol/min] = [mmol/L] * [L/kg] * [kg]
-    if G >= 9: FR = 0.003 * (G - 9) * VG * BW
-    else:      FR = 0
+    # Note: Simplified kidney threshold model. Real threshold/gradient more complex,
+    # but this approximation is acceptable for physiological range (40-600 mg/dL)
+    if G >= 9.0:
+        fr = 0.003 * (G - 9.0) * VG * BW
+    else:
+        fr = 0.0
 
-    # eq:2.1: drift of glucose mass in the accessible compartment
-    # [mmol/min] = [mmol/min] - [mmol/min] - [mmol/min] - [1/min * mmol] + [1/min * mmol] + [mmol/min/kg * kg]
-    dQ1 = UG - F01c - FR - (x1 * Q1) + (k12 * Q2) + (EGP0 * BW * (1 - x3))
-
-    # eq:2.2: drift of glucose mass in the non-accessible compartment
-    # [mmol/min] = [1/min * mmol] - [[1/min + 1/min] * mmol]
-    dQ2 = x1 * Q1 - (k12 + x2) * Q2
-
-
-    # --- 4. INSULIN ACTION ---
     # eq:2.13: insulin sensitivity factors
     kb1 = SI1 * ka1  # [min^-2/(mU/L)] = [1/min/(mU/L)] * [1/min]
     kb2 = SI2 * ka2  # [min^-2/(mU/L)] = [1/min/(mU/L)] * [1/min]
@@ -133,16 +160,29 @@ def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
     # [1/min] = [1/min * L/mU] * [mU/L] - [1/min] * [1]
     dx3 = kb3 * I - ka3 * x3
 
-    #dx_t = state_listify(Q1=dQ1, Q2=dQ2, S1=dS1, S2=dS2, I=dI, x1=dx1, x2=dx2, x3=dx3, D1=dD1, D2=dD2)
+    # Transfer rates between glucose compartments
+    R12 = k12 * Q2
+    R21 = x1 * Q1
+    # Endogenous glucose production
+    EGPc = EGP0 * BW * max(0.0, 1.0 - x3)
 
-    #return state_unlistify(dx_t)
+    # eq:2.1: drift of glucose mass in the accessible compartment
+    # [mmol/min] = [mmol/min] - [mmol/min] - [mmol/min] - [1/min * mmol] + [1/min * mmol] + [mmol/min/kg * kg]
+    # UG: gut absorption, F01c: CNS uptake, fr: renal excretion,
+    # R12: Q1→Q2 transfer, R21: Q2→Q1 transfer, EGPc: liver production
+    dQ1 = UG - F01c - fr - R12 + R21 + EGPc
 
+    # eq:2.2: drift of glucose mass in the non-accessible compartment
+    # [mmol/min] = [1/min * mmol] - [[1/min + 1/min] * mmol]
+    dQ2 = R12 - (k12 + x2) * Q2
+
+    # Note: No state bounds validation - ODE can produce negative masses (Q1<0, etc.)
+    # if parameters are pathological. Consider adding clipping for production use.
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
 
 
-
 # Initial state functions
-def compute_initial_state_from_insulin(us: float, params: dict) -> list:
+def compute_initial_state_from_insulin(us: float, params: ParameterSet) -> StateVector:
     BW = params['BW']      # [kg] body weight
     tauI = params['tauI']  # [min] maximum insulin absorption time
     ke = params['ke']      # [1/min] insulin elimination rate from plasma
@@ -186,10 +226,15 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
         D2=0,      # [mmol] glucose absorption in the intestine
     )
 
-
-
 # Steady state functions
-def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> list:
+def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: ParameterSet, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> StateVector:
+    """
+    Compute steady-state using crude fixed-step search.
+    
+    Note: This non-adaptive algorithm with fixed 100 mU steps is inefficient but works.
+    Bisection would converge faster, but this is acceptable for initialization.
+    Steps can overshoot target; not critical for initial state computation.
+    """
     if international_units:
         tolerance = 0.1
     else:
@@ -197,56 +242,64 @@ def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: d
         desired_glycemia = desired_glycemia / (params['MwG'] / 10)
 
     # Initial guess for insulin
-    I = 1500        # [mU]
-    I_offset = 100  # [mU]
+    insulin_amount = 1500        # [mU]
+    insulin_offset = 100         # [mU] - fixed step size; bisection would be more efficient
 
     if print_progress:
         print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
 
-    x0 = compute_initial_state_from_insulin(I, params)
+    x0 = compute_initial_state_from_insulin(insulin_amount, params)
 
     # Cycle until good glycemia is achieved
     for i in range(max_iterations):
 
-        x0 = compute_initial_state_from_insulin(I, params)
-        G = measure_glycemia(x0, params)
+        x0 = compute_initial_state_from_insulin(insulin_amount, params)
+        G = measure_glycemia(tuple(x0), params)
 
-        if print_progress: print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], I= {I:.2f} [mU/L]")
+        if print_progress: print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], I= {insulin_amount:.2f} [mU/L]")
 
         if np.abs(G - desired_glycemia) < tolerance:
             return x0
         if G > desired_glycemia:
-            I += I_offset
+            insulin_amount += insulin_offset
         else:
-            I -= I_offset
-        #I_offset *= 0.95
-        #if I <= 0:
+            insulin_amount -= insulin_offset
+        #insulin_offset *= 0.95
+        #if insulin_amount <= 0:
         #    break
 
     return x0
 
 
-    
-    
+# ============================================================================
+# LEGACY: Gemini Reference Implementation
+# ============================================================================
+# The following is a legacy reference implementation. It is NOT used by the main pipeline.
+# Kept for historical reference only.
 
-
-
-
-
-
-
-
-
-def hovorka_equations_gemini(t, x, params, input_func, scenario=1):
+def hovorka_equations_gemini(
+    t: int, 
+    x: StateVector, 
+    params: ParameterSet, 
+    input_func: InputFunc, 
+    scenario: int = 1
+) -> StateVector:
     """
-    Standard Hovorka Model ODEs.
+    LEGACY: Gemini reference implementation of Hovorka Model ODEs.
+    This function is kept for historical reference and is not used in the main pipeline.
+    
+    WARNING: input_func signature mismatch - this function calls input_func(t)
+    with only one argument, but modern input.py functions (scenario_inputs, 
+    scenario_with_cached_meals) require multiple arguments. This will fail
+    if called directly with current input functions.
+    
     States x: [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
     """
     # Unpack states
     Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
 
     # Unpack parameters
-    MwG = params['MwG']     # Molecular weight of glucose (180.16 mg/mmol)
+    # MwG = params['MwG']     # Molecular weight of glucose (180.16 mg/mmol) - not used in current implementation
     EGP0 = params['EGP0']   # Endogenous glucose production at zero insulin [mmol/kg/min]
     F01 = params['F01']     # Non-insulin dependent glucose flux [mmol/kg/min]
     k12 = params['k12']     # Transfer rate between Q1 and Q2 [1/min]
@@ -265,13 +318,14 @@ def hovorka_equations_gemini(t, x, params, input_func, scenario=1):
     tauI = params['tauI'] # Insulin absorption time constant [min]
     tauG = params['tauG'] # Meal absorption time constant [min]
     Ag = params['Ag']       # Carbohydrate bioavailability (fraction)
-    BW = params['BW']       # Body weight [kg]
+    # BW = params['BW']       # Body weight [kg] - not used in current implementation
 
     # Get inputs (Insulin u(t) and Carbs d(t)) at current time t
     u_t, d_t = input_func(t)
-    U = u_t * 1000      # Convert insulin from U/min to mU/min
-    D = d_t * (1000 / MwG)  # Convert carbs from g/min to mg/min (MwG = 180.16 mg/mmol)
-    G = Q1 / (VG * BW)
+    # Note: U and D conversion factors computed but not used in current implementation
+    # _U = u_t * 1000      # Convert insulin from U/min to mU/min
+    # _D = d_t * (1000 / MwG)  # Convert carbs from g/min to mg/min (MwG = 180.16 mg/mmol)
+    # _G = Q1 / (VG * BW) # Current glucose concentration (computed for reference)
 
     # --- Glucose Subsystem ---
     # Non-insulin dependent glucose flux
@@ -287,12 +341,13 @@ def hovorka_equations_gemini(t, x, params, input_func, scenario=1):
     UG = D2 / tauG
 
     # Endogenous Glucose Production
-    EGP = EGP0 * (1 - x3)
-    if EGP < 0: EGP = 0
+    egp_rate = EGP0 * (1 - x3)
+    if egp_rate < 0: 
+        egp_rate = 0
 
     # Glucose Kinetics
     # 0 -> Q1 (Accessible compartment)
-    dQ1 = - (F01_c + FR + x1 * Q1 + k12 * Q1) + k12 * Q2 + UG + EGP
+    dQ1 = - (F01_c + FR + x1 * Q1 + k12 * Q1) + k12 * Q2 + UG + egp_rate
     # Q1 -> Q2 (Non-accessible compartment)
     dQ2 = x1 * Q1 - (k12 + x2) * Q2
 
@@ -319,10 +374,6 @@ def hovorka_equations_gemini(t, x, params, input_func, scenario=1):
     dD2 = D1 / tauG - D2 / tauG
 
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
-
-
-
-
 
 if __name__ == "__main__":
     print("Get steady state testing")

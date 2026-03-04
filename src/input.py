@@ -475,27 +475,3 @@ class DayScenario:
                 u += self.dinner_insulin * 1000
 
         return u, d
-
-
-def scenario_inputs_gemini(t, scenario=1):
-    """
-    Defines what happens at time t.
-    Time is in minutes. 0 to 1440 (24 hours).
-    """
-    # Basal Insulin (constant background)
-    u_basal = 0.5  # U/hr -> converted to mU/min later if needed.
-    # Let's assume input u is in mU/min. 0.5 U/hr = 500 mU / 60 min = 8.33
-    u_val = 8.33
-
-    # Meal at t=120 min (2 hours in)
-    # 50g carbs eaten over 15 mins
-    d_val = 0
-    if 120 <= t <= 135:
-        d_val = 50000 / 15  # mg/min (Total 50g)
-
-    # Meal Bolus Insulin at t=120
-    # 5 Units bolus delivered over 1 min
-    if 120 <= t <= 121:
-        u_val += 5000  # 5 U = 5000 mU
-
-    return u_val, d_val

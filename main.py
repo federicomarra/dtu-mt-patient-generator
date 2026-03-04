@@ -9,35 +9,24 @@ from scipy.integrate import solve_ivp
 from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
-#import pandas as pd
-
-GEMINI = False
 
 # --- 1. The Hovorka Model Equations ---
-if GEMINI:
-    from src.model import compute_optimal_steady_state_from_glucose, hovorka_equations_gemini as hovorka_equations
-else:
-    from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose
+from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose
 
 # --- 2. Simulation Helpers ---
-if GEMINI:
-    from src.parameters import generate_monte_carlo_patients_gemini as generate_monte_carlo_patients
-else:
-    from src.parameters import generate_monte_carlo_patients
+from src.parameters import generate_monte_carlo_patients
 
 # --- 3. Scenario Definition ---
-if GEMINI:
-    from src.input import scenario_inputs_gemini as scenario_inputs
-else:
-    from src.input import DayScenario, minutes_to_time
-from src.input import N_SCENARIOS
+from src.input import DayScenario, minutes_to_time, N_SCENARIOS
 
+# --- 4. Sensor ---
 from src.sensor import measure_glycemia
 
+# --- 5. Export ---
 from src.export import export_to_formats
 
 
-# --- 4. Main Simulation Loop ---
+# --- 6. Main Simulation Loop ---
 def run_simulation(do_export: list[bool] = [True, False], international_unit: bool = True, n_patients: int = 100, n_days: int = 7):
     if any(do_export):
         folder_name = "monte_carlo_results"
@@ -65,10 +54,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         
         # Initial Conditions for each patient
         # Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
-        if GEMINI:
-            x0_curr = [800, 800, 100, 100, 10, 0, 0, 0, 0, 0]
-        else:
-            x0_curr, u_init = compute_optimal_steady_state_from_glucose(5.5, p, international_units=True, max_iterations=100, print_progress=False)
+        x0_curr, u_init = compute_optimal_steady_state_from_glucose(5.5, p, international_units=True, max_iterations=100, print_progress=False)
         
         for day in range(n_days):
             scenario = 1  #TODO: Implement multiple scenarios

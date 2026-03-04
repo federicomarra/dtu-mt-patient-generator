@@ -71,6 +71,15 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
     Includes both `minute` (within day) and `absolute_minute` (global timeline).
     """
     blocks: List[pd.DataFrame] = []
+
+    day_values: List[int] = []
+    for p_data in results_dict.values():
+        days = p_data.get("days")
+        if days is None:
+            continue
+        day_values.extend(int(day) for day in days.keys())
+
+    day_origin = min(day_values) if day_values else 0
     
     for p_id, p_data in results_dict.items():
         days = p_data.get("days")
@@ -86,7 +95,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
 
             day_int = int(day)
             minutes = np.arange(values_arr.size, dtype=int)
-            absolute_minutes = (day_int * 1440) + minutes
+            absolute_minutes = ((day_int - day_origin) * 1440) + minutes
             times = _minutes_to_clock_strings(absolute_minutes)
 
             blocks.append(pd.DataFrame({

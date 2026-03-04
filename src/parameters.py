@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Optional
 
 import numpy as np
 
-ParameterSet = Dict[str, float]
+ParameterSet = dict[str, float]
 
 _CV_KB: float = 0.30
 _TAUI_RATE_MIN: float = 1e-3
@@ -170,7 +170,7 @@ def generate_monte_carlo_patients(
     n: int = 10,
     standard_patient: bool = False,
     seed: Optional[int] = None,
-) -> List[ParameterSet]:
+) -> list[ParameterSet]:
     """
     Generate N patient parameter sets.
 
@@ -182,7 +182,7 @@ def generate_monte_carlo_patients(
 
     rng = np.random.default_rng(seed)
     base = get_base_params()
-    patients: List[ParameterSet] = []
+    patients: list[ParameterSet] = []
 
     for _ in range(n):
         if standard_patient:
@@ -234,13 +234,13 @@ def get_base_params_gemini(bw: float = 70.0) -> ParameterSet:
 def generate_monte_carlo_patients_gemini(
     n: int = 10,
     seed: Optional[int] = None,
-) -> List[ParameterSet]:
+) -> list[ParameterSet]:
     """Legacy Gemini patient generator (unused by current main pipeline)."""
     if n <= 0:
         return []
 
     rng = np.random.default_rng(seed)
-    patients: List[ParameterSet] = []
+    patients: list[ParameterSet] = []
     base = get_base_params_gemini()
 
     for _ in range(n):

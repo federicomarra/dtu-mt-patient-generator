@@ -13,13 +13,13 @@ def get_base_params():
         'ka2': 0.0683,      # [1/min] deactivation rate for disposal
         'ka3': 0.0304,      # [1/min] deactivation rate for EGP
 
-        'SI1': 51.2,        # [L/min/mU] sensitivity transport
-        'SI2': 8.2,         # [L/min/mU] sensitivity disposal
-        'SI3': 520.0,       # [L/mU] sensitivity EGP
+        'SI1': 51.2e-4,     # [L/min/mU] sensitivity transport (Hovorka 2004 Table 1: 51.2 × 10^-4)
+        'SI2': 8.2e-4,      # [L/min/mU] sensitivity disposal  (Hovorka 2004 Table 1: 8.2 × 10^-4)
+        'SI3': 520.0e-4,    # [L/mU] sensitivity EGP            (Hovorka 2004 Table 1: 520 × 10^-4)
 
-        'kb1': 0.0055 * 51.2,   # [min^-2/(mU/L)] sensitivity transport
-        'kb2': 0.0683 * 8.2,    # [min^-2/(mU/L)] sensitivity disposal
-        'kb3': 0.0304 * 520,    # [min^-1/(mU/L)] sensitivity EGP
+        'kb1': 0.0055 * 51.2e-4,   # [min^-2/(mU/L)] sensitivity transport
+        'kb2': 0.0683 * 8.2e-4,    # [min^-2/(mU/L)] sensitivity disposal
+        'kb3': 0.0304 * 520e-4,    # [min^-1/(mU/L)] sensitivity EGP
 
         'ke': 0.138,        # [1/min] elimination rate
 
@@ -62,9 +62,9 @@ def generate_monte_carlo_patients(n=10, standard_patient=False):
             p['ka3'] = np.abs(np.random.normal(0.0304, 0.0235))
 
             # Insulin Sensitivities (SI)
-            p['SI1'] = np.random.normal(51.2, 32.09)
-            p['SI2'] = np.random.normal(8.2, 7.84)
-            p['SI3'] = np.random.normal(520.0, 306.2)
+            p['SI1'] = np.random.normal(51.2e-4, 32.09e-4)
+            p['SI2'] = np.random.normal(8.2e-4, 7.84e-4)
+            p['SI3'] = np.random.normal(520.0e-4, 306.2e-4)
 
             # Elimination and Volumes
             p['ke'] = np.abs(np.random.normal(0.14, 0.035))

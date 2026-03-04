@@ -29,7 +29,7 @@ else:
 if GEMINI:
     from src.input import scenario_inputs_gemini as scenario_inputs
 else:
-    from src.input import scenario_inputs
+    from src.input import DayScenario, minutes_to_time
 from src.input import N_SCENARIOS
 
 from src.sensor import measure_glycemia
@@ -47,7 +47,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         now_sim_folder_path = folder_path / now_string
         now_sim_folder_path.mkdir(parents=True, exist_ok=True)
 
-    patients = generate_monte_carlo_patients(n_patients)
+    patients = generate_monte_carlo_patients(n_patients, standard_patient=False)
 
     # Time span for 24 hours
     minutes_per_day = int(24 * 60)
@@ -68,16 +68,20 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
         if GEMINI:
             x0_curr = [800, 800, 100, 100, 10, 0, 0, 0, 0, 0]
         else:
-            x0_curr = compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100, print_progress=False)
+            x0_curr, u_init = compute_optimal_steady_state_from_glucose(5.5, p, international_units=True, max_iterations=100, print_progress=False)
         
         for day in range(n_days):
             scenario = 1  #TODO: Implement multiple scenarios
             #scenario = np.random.randint(1, N_SCENARIOS + 1) # Randomly select a scenario for this day
             
+            # Pre-generate all random meal parameters for this day ONCE
+            # This ensures the ODE solver sees deterministic inputs
+            day_scenario = DayScenario(scenario=scenario, basal_at_minute=u_init)
+            
             # Accumulate time offset for plotting
             t_offset = day * minutes_per_day
             
-            fx = lambda t, x: hovorka_equations(t, x, p, scenario_inputs, scenario)
+            fx = lambda t, x: hovorka_equations(t, x, p, day_scenario.get_inputs)
             
             y_day = []
             # Solving step-by-step as per MATLAB code
@@ -86,10 +90,14 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
                 t_end = t_eval[k+1]
                 
                 sol = solve_ivp(fx, (t_start, t_end), x0_curr, method='RK45')
+
                 x0_curr = sol.y[:, -1]
                 
                 # Measure glycemia at the end of the step
                 y_val = measure_glycemia(x0_curr, p, noise_std=0.01)
+
+                if k % (60 * n_days) == 0 and international_unit:
+                    print(f"Day {day}: t={minutes_to_time(t_eval[k+1])}  G={y_val:.4f} mmol/L")
                 y_day.append(y_val)
             
             y_day = np.array(y_day)
@@ -97,7 +105,7 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
             if not international_unit: y_day = y_day * (p['MwG'] / 10)  # Convert to mg/dL
             
             # Plot in hours: (minutes + offset) / 60
-            plt.plot((t_eval[1:] + t_offset) / 60, y_day, color='blue', alpha=0.15)
+            plt.plot((t_eval[1:] + t_offset) / 60, y_day, color='blue')
 
             # Store results for export
             patient_results = results_tot[i]
@@ -117,30 +125,30 @@ def run_simulation(do_export: list[bool] = [True, False], international_unit: bo
     if international_unit:
         plt.axhline(3.8, color='r', linestyle='--', label='Hypoglycemia Limit')
         plt.axhline(10, color='y', linestyle='--', label='Hyperglycemia Limit')
-        plt.ylim(0, 20)
-        plt.ylabel("Blood Glucose (mmol/l)")
+        plt.ylim(0, 30)
+        plt.ylabel("Blood Glucose [mmol/l]")
     else:
         plt.axhline(70, color='r', linestyle='--', label='Hypoglycemia Limit')
         plt.axhline(180, color='y', linestyle='--', label='Hyperglycemia Limit')
         plt.ylim(0, 500)
-        plt.ylabel("Blood Glucose (mg/dL)")
+        plt.ylabel("Blood Glucose [mg/dL]")
     plt.title(f"Hovorka Model: Monte Carlo Simulation (n patients={n_patients}, n days={n_days})")
-    plt.xlabel("Time (hours)")
+    plt.xlabel("Time [hours]")
     plt.xticks(np.arange(0, (24 * n_days) + 1, (24 / 8) * n_days))
     plt.xlim(0, 24 * n_days)
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.show()
 
-    plt.savefig(now_sim_folder_path / "simulation_plot.png")
+    if any(do_export): plt.savefig(now_sim_folder_path / "simulation_plot.png") #TODO: fix, cause it saves blank image
 
 
 if __name__ == "__main__":
     skipTerminal: bool = True         # Skip terminal input and use default values
-    EXPORT: list[bool] = [False, True]      # [export_to_parquet, export_to_csv]
+    EXPORT: list[bool] = [True, True]      # [export_to_parquet, export_to_csv]
     INTERNATIONAL_UNIT: bool = True   # True for mmol/L, False for mg/dL
-    N_PATIENTS: int = 1             # Number of patients to simulate
-    N_DAYS: int = 1                  # Number of days to simulate for each patient
+    N_PATIENTS: int = 10             # Number of patients to simulate
+    N_DAYS: int = 5                  # Number of days to simulate for each patient
 
     if not skipTerminal:
         unit_answer: str = input("Do you prefer international unit: mmol/L instead of mg/dL? (y/n): ").strip().lower()

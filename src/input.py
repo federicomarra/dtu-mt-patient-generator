@@ -6,8 +6,9 @@ def time_to_minutes(h: int, m: int) -> int:
     """Convert hours and minutes to total minutes."""
     return h * 60 + m
 
-def minutes_to_time(minutes: int) -> str:
+def minutes_to_time(minutes) -> str:
     """Convert total minutes to HH:MM format."""
+    minutes = int(minutes)
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours:02d}:{mins:02d}"
@@ -341,7 +342,7 @@ def scenario_long_lunch(time: int, basal: float, insulin_sensitivity: float):
     return u, d
 
 
-def scenario_inputs(time: int, basal_hourly: float=0.5, scenario: int=1, insulin_sensitivity: float = 2.0):
+def scenario_inputs(time: int, basal_hourly: float=0.5, scenario: int=1, insulin_sensitivity: float = 10.0):
     """
     Defines what happens at time t.
     Time is in minutes. 0 to 24*60=1440 (24 hours).
@@ -370,6 +371,110 @@ def scenario_inputs(time: int, basal_hourly: float=0.5, scenario: int=1, insulin
 
 
 
+class DayScenario:
+    """
+    Pre-generates all random meal parameters at construction time,
+    then provides a deterministic get_inputs(t) method for the ODE solver.
+    
+    This fixes the critical bug where np.random.randint() inside the ODE RHS 
+    caused different random values on every solver evaluation, leading to 
+    numerical explosion (glycemia ~ 10^300).
+    """
+    def __init__(self, scenario: int = 1, basal_at_minute: float = 0.5 * 1000 / 60, insulin_sensitivity: float = 10.0):
+        self.basal = basal_at_minute   # [mU/min]
+        self.scenario = scenario
+        self.insulin_sensitivity = insulin_sensitivity
+
+        # Pre-generate all random meal parameters ONCE
+        self.breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
+        self.breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
+        self.breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
+        self.breakfast_insulin = self.breakfast_carbs / insulin_sensitivity
+
+        self.snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
+        self.snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
+        self.snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
+        self.snack_insulin = self.snack_carbs / insulin_sensitivity
+
+        self.lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
+        self.lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
+        self.lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
+        self.lunch_insulin = self.lunch_carbs / insulin_sensitivity
+
+        self.dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
+        self.dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
+        self.dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
+        self.dinner_insulin = self.dinner_carbs / insulin_sensitivity
+
+        # Scenario-specific pre-generated random choices
+        if scenario == 4:  # missed_bolus
+            self.missed_meal_id = np.random.randint(1, 5)
+        if scenario == 5:  # late_bolus
+            self.late_bolus_id = np.random.randint(1, 5)
+        if scenario == 6:  # long_lunch
+            self.lunch_duration = self.lunch_duration * 3
+
+    def get_inputs(self, t: float) -> tuple[float, float]:
+        """
+        Deterministic input function: returns (u, d) at time t.
+        All random parameters were pre-generated in __init__.
+        """
+        u = self.basal
+        d = 0.0
+
+        # --- Breakfast ---
+        if self.breakfast_time <= t <= self.breakfast_time + self.breakfast_duration:
+            d = self.breakfast_carbs * 1000 / self.breakfast_duration
+        bolus_ok = True
+        if self.scenario == 4 and self.missed_meal_id == 1:
+            bolus_ok = False
+        if bolus_ok:
+            bolus_start = self.breakfast_time - PREANNOUNCED_BOLUS_TIME
+            if self.scenario == 5 and self.late_bolus_id == 1:
+                bolus_start = self.breakfast_time  # late bolus: at meal time
+            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
+                u += self.breakfast_insulin * 1000
+
+        # --- Snack ---
+        if self.snack_time <= t <= self.snack_time + self.snack_duration:
+            d = self.snack_carbs * 1000 / self.snack_duration
+        bolus_ok = True
+        if self.scenario == 4 and self.missed_meal_id == 2:
+            bolus_ok = False
+        if bolus_ok:
+            bolus_start = self.snack_time - PREANNOUNCED_BOLUS_TIME
+            if self.scenario == 5 and self.late_bolus_id == 2:
+                bolus_start = self.snack_time
+            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
+                u += self.snack_insulin * 1000
+
+        # --- Lunch ---
+        if self.lunch_time <= t <= self.lunch_time + self.lunch_duration:
+            d = self.lunch_carbs * 1000 / self.lunch_duration
+        bolus_ok = True
+        if self.scenario == 4 and self.missed_meal_id == 3:
+            bolus_ok = False
+        if bolus_ok:
+            bolus_start = self.lunch_time - PREANNOUNCED_BOLUS_TIME
+            if self.scenario == 5 and self.late_bolus_id == 3:
+                bolus_start = self.lunch_time
+            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
+                u += self.lunch_insulin * 1000
+
+        # --- Dinner ---
+        if self.dinner_time <= t <= self.dinner_time + self.dinner_duration:
+            d = self.dinner_carbs * 1000 / self.dinner_duration
+        bolus_ok = True
+        if self.scenario == 4 and self.missed_meal_id == 4:
+            bolus_ok = False
+        if bolus_ok:
+            bolus_start = self.dinner_time - PREANNOUNCED_BOLUS_TIME
+            if self.scenario == 5 and self.late_bolus_id == 4:
+                bolus_start = self.dinner_time
+            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
+                u += self.dinner_insulin * 1000
+
+        return u, d
 
 
 def scenario_inputs_gemini(t, scenario=1):

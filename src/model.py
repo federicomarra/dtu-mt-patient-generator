@@ -26,7 +26,7 @@ def state_unlistify(x):
 
 
 # Model equations
-def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
+def hovorka_equations(t, x, params, input_func) -> list[float]:
     """
     Standard Hovorka Model ODEs.
     States x: [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
@@ -54,11 +54,11 @@ def hovorka_equations(t, x, params, input_func, scenario) -> list[float]:
     BW = params['BW']       # Body weight [kg]
 
     # Get inputs (Insulin u(t) and Carbs d(t)) at current time t
-    u_t, d_t = input_func(t, scenario)
+    u_t, d_t = input_func(t)
     # Convert insulin from U/min to mU/min
     U = u_t
-    # Convert carbs from g/min to mg/min (MwG = 180.16 mg/mmol)
-    D = d_t * (1000 / MwG)
+    # Convert carbs from mg/min to mmol/min (MwG = 180.16 mg/mmol)
+    D = d_t / MwG
     # Calculate current glucose concentration in blood (mmol/L)
     G = Q1 / (VG * BW)
 
@@ -162,7 +162,7 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
 
     # -x1*Q1 + k12*Q2 = F01 + EGP0(x3-1) * BW
     # x1*Q1 - (k12 + x2)*Q2 = 0
-    b1 = (EGP0 * BW * (x3eq - 1)) + F01  # [mmol/min] = [mmol/kg/min] * [kg] * [1]
+    b1 = (EGP0 * BW * (x3eq - 1)) + (F01 * BW)  # [mmol/min] = [mmol/kg/min] * [kg] * [1] + [mmol/kg/min] * [kg]
     a11 = -x1eq                          # [1/min]
     a12 = k12                            # [1/min]
     # b2 = 0                             # [mmol/min]
@@ -189,41 +189,39 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
 
 
 # Steady state functions
-def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> list:
+def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> tuple[list, float]:
     if international_units:
         tolerance = 0.1
     else:
         tolerance = 1
         desired_glycemia = desired_glycemia / (params['MwG'] / 10)
 
-    # Initial guess for insulin
-    I = 1500        # [mU]
-    I_offset = 100  # [mU]
-
     if print_progress:
         print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
 
-    x0 = compute_initial_state_from_insulin(I, params)
+    # Bisection search: higher insulin rate (us) → lower steady-state glycemia
+    # Reasonable range for basal insulin rate: 0.1 to 50 mU/min
+    us_low = 0.1    # [mU/min] — very low insulin → very high glucose
+    us_high = 50.0  # [mU/min] — high insulin → very low glucose
 
-    # Cycle until good glycemia is achieved
     for i in range(max_iterations):
-
-        x0 = compute_initial_state_from_insulin(I, params)
+        us_mid = (us_low + us_high) / 2.0
+        x0 = compute_initial_state_from_insulin(us_mid, params)
         G = measure_glycemia(x0, params)
 
-        if print_progress: print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], I= {I:.2f} [mU/L]")
+        if print_progress:
+            print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], us= {us_mid:.4f} [mU/min]")
 
         if np.abs(G - desired_glycemia) < tolerance:
-            return x0
-        if G > desired_glycemia:
-            I += I_offset
-        else:
-            I -= I_offset
-        #I_offset *= 0.95
-        #if I <= 0:
-        #    break
+            return x0, us_mid
 
-    return x0
+        # Higher insulin → lower glucose (monotonic in the physiological range)
+        if G > desired_glycemia:
+            us_low = us_mid   # Need more insulin to lower glucose
+        else:
+            us_high = us_mid  # Need less insulin to raise glucose
+
+    return x0, us_mid
 
 
     

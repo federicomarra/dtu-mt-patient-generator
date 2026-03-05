@@ -4,7 +4,7 @@ A high-fidelity Monte Carlo simulation framework for Type 1 Diabetes glucose dyn
 
 ## Features
 
-- **Physiological Model**: Full 6-state Hovorka ODE model with insulin and glucose dynamics
+- **Physiological Model**: Full 11-state Hovorka ODE model with insulin and glucose dynamics
 - **Monte Carlo Sampling**: Generate diverse patient cohorts with physiologically plausible parameter distributions (aligned with published research)
 - **Realistic Meal Scheduling**: 5-meal daily schedule (breakfast, snacks, lunch, dinner) with temporal jitter and realistic eating durations
 - **Safety Controls**:

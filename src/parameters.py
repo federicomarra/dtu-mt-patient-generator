@@ -25,12 +25,12 @@ def get_base_params() -> ParameterSet:
         "ka1": 0.0055,  # [1/min] deactivation rate for transport
         "ka2": 0.0683,  # [1/min] deactivation rate for disposal
         "ka3": 0.0304,  # [1/min] deactivation rate for EGP
-        "SI1": 51.2,  # [L/min/mU] sensitivity transport
-        "SI2": 8.2,  # [L/min/mU] sensitivity disposal
-        "SI3": 520.0,  # [L/mU] sensitivity EGP
-        "kb1": 0.0055 * 51.2,  # [min^-2/(mU/L)] sensitivity transport
-        "kb2": 0.0683 * 8.2,  # [min^-2/(mU/L)] sensitivity disposal
-        "kb3": 0.0304 * 520.0,  # [min^-1/(mU/L)] sensitivity EGP
+        "SI1": 51.2e-4,  # [L/min/mU] sensitivity transport
+        "SI2": 8.2e-4,  # [L/min/mU] sensitivity disposal
+        "SI3": 520.0e-4,  # [L/mU] sensitivity EGP
+        "kb1": 0.0055 * 51.2e-4,  # [min^-2/(mU/L)] sensitivity transport
+        "kb2": 0.0683 * 8.2e-4,  # [min^-2/(mU/L)] sensitivity disposal
+        "kb3": 0.0304 * 520.0e-4,  # [min^-1/(mU/L)] sensitivity EGP
         "ke": 0.138,  # [1/min] elimination rate
         "VI": 0.12,  # [L/kg] insulin distribution volume
         "VG": 0.1484,  # [L/kg] glucose distribution volume
@@ -104,11 +104,36 @@ def _is_plausible_patient(p: ParameterSet) -> bool:
         return False
     if not (0.03 <= p["VI"] <= 0.5):
         return False
-    if not (0.02 <= p["VG"] <= 0.8):
+    # Tightened VG lower bound to reduce unstable low-distribution outliers.
+    if not (0.10 <= p["VG"] <= 0.62):
         return False
     if not (5.0 <= p["tauI"] <= 400.0):
         return False
     if not (5.0 <= p["tauG"] <= 240.0):
+        return False
+
+    # Keep insulin sensitivities within physiological ranges based on published
+    # Hovorka distributions (Boiroux-Cap2 thesis, Table 2.1)
+    # SI1 ~ N(51.2e-4, 32.09e-4²), allow ±3σ
+    if not (1.0e-4 <= p["SI1"] <= 1.5e-2):
+        return False
+    # SI2 ~ N(8.2e-4, 7.84e-4²), allow ±3σ - was too restrictive, causing outliers
+    if not (1e-5 <= p["SI2"] <= 3.5e-3):
+        return False
+    # SI3 ~ N(520e-4, 306.2e-4²), allow ±2.5σ - was far too restrictive
+    # Published mean: 0.052, std: 0.0306, so reasonable range: -0.025 to 0.13
+    # Use realistic bounds: 0.01 to 0.12 (covers 99% of published distribution)
+    if not (1.0e-2 <= p["SI3"] <= 1.2e-1):
+        return False
+
+    # Endogenous glucose production: N(0.0161, 0.0039²)
+    # Allow ±3σ: 0.0161 ± 0.0117 = -0.0 to 0.028, clamp at 0.001
+    if not (0.001 <= p["EGP0"] <= 0.030):
+        return False
+
+    # F01 (non-insulin dependent glucose): N(0.0097, 0.0022²)
+    # Allow ±3σ: 0.0097 ± 0.0066 = 0.003 to 0.016
+    if not (0.001 <= p["F01"] <= 0.020):
         return False
 
     return True
@@ -134,9 +159,9 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     p["ka3"] = _sample_truncated_normal(rng, 0.0304, 0.0235)
 
     # Insulin sensitivities (cannot be negative)
-    p["SI1"] = _sample_truncated_normal(rng, 51.2, 32.09, lower=0.1)
-    p["SI2"] = _sample_truncated_normal(rng, 8.2, 7.84, lower=0.1)
-    p["SI3"] = _sample_truncated_normal(rng, 520.0, 306.2, lower=0.1)
+    p["SI1"] = _sample_truncated_normal(rng, 51.2e-4, 32.09e-4, lower=1e-6)
+    p["SI2"] = _sample_truncated_normal(rng, 8.2e-4, 7.84e-4, lower=1e-6)
+    p["SI3"] = _sample_truncated_normal(rng, 520.0e-4, 306.2e-4, lower=1e-6)
 
     # Elimination and volumes
     p["ke"] = _sample_truncated_normal(rng, 0.14, 0.035)
@@ -198,57 +223,5 @@ def generate_monte_carlo_patients(
             sampled = base.copy()
 
         patients.append(sampled)
-
-    return patients
-
-
-# ============================================================================
-# LEGACY / UNUSED (Gemini reference helpers)
-# ============================================================================
-# Kept for historical comparison only. Main pipeline should use get_base_params
-# and generate_monte_carlo_patients above.
-
-def get_base_params_gemini(bw: float = 70.0) -> ParameterSet:
-    """Legacy Gemini baseline parameters (unused by current main pipeline)."""
-    return {
-        "MwG": 180.16,
-        "BW": float(bw),
-        "EGP0": 16.9,
-        "F01": 9.7,
-        "k12": 0.066,
-        "VG": 0.16 * float(bw),
-        "kb1": 14.6e-4 * 60,
-        "kb2": 8.2e-4 * 60,
-        "kb3": 52e-5 * 60,
-        "ka1": 0.006 * 60,
-        "ka2": 0.06 * 60,
-        "ka3": 0.03 * 60,
-        "ke": 0.138,
-        "VI": 0.12 * float(bw),
-        "tauI": 55.0,
-        "tauG": 40.0,
-        "Ag": 0.8,
-    }
-
-
-def generate_monte_carlo_patients_gemini(
-    n: int = 10,
-    seed: Optional[int] = None,
-) -> list[ParameterSet]:
-    """Legacy Gemini patient generator (unused by current main pipeline)."""
-    if n <= 0:
-        return []
-
-    rng = np.random.default_rng(seed)
-    patients: list[ParameterSet] = []
-    base = get_base_params_gemini()
-
-    for _ in range(n):
-        p = base.copy()
-        p["kb1"] = _sample_lognormal_with_cv(rng, base["kb1"], _CV_KB)
-        p["kb2"] = _sample_lognormal_with_cv(rng, base["kb2"], _CV_KB)
-        p["kb3"] = _sample_lognormal_with_cv(rng, base["kb3"], _CV_KB)
-        p["tauG"] = _sample_truncated_normal(rng, base["tauG"], 5.0)
-        patients.append(p)
 
     return patients

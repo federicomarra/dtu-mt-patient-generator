@@ -4,12 +4,22 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import List, Optional, Mapping, Sequence, SupportsFloat, TypedDict, cast
+from dataclasses import dataclass
+from typing import List, Optional, Mapping, Sequence, SupportsFloat, TypedDict, cast, Any
 
 # File imports
 PatientId = int | str
 DayValues = Mapping[int, Sequence[SupportsFloat] | np.ndarray]
 
+@dataclass
+class ExportConfig:
+    """Export configuration with named parameters."""
+    export_to_parquet: bool = True
+    export_to_csv: bool = False
+    
+    def to_list(self) -> list[bool]:
+        """Convert to list format for backward compatibility."""
+        return [self.export_to_parquet, self.export_to_csv]
 
 class PatientData(TypedDict):
     days: DayValues | None
@@ -119,10 +129,11 @@ def export_to_formats(
     n_patients: int,
     n_days: int,
     output_folder: Path,
-    export: Optional[List[bool]] = None
+    export: Optional[List[bool]] = None,
+    config_metadata: Optional[dict[str, Any]] = None
 ) -> None:
     """
-    Exports simulation results to both Parquet and CSV files.
+    Exports simulation results to both Parquet and CSV files with optional metadata.
 
     Parameters:
     results_dict (dict): The nested dictionary containing patient results.
@@ -130,6 +141,7 @@ def export_to_formats(
     n_days (int): Number of days simulated.
     output_folder (Path): The directory where the files will be saved.
     export (list[bool] | None): [export_parquet, export_csv]. Defaults to [True, False].
+    config_metadata (dict | None): Configuration parameters to log alongside results.
     
     Raises:
     ValueError: If results_dict has invalid structure.
@@ -183,5 +195,17 @@ def export_to_formats(
         try:
             df.to_csv(csv_path, index=False)
             print(f"Data successfully exported in csv format to {csv_path}")
+            
+            # Write config metadata to separate file if provided
+            if config_metadata:
+                config_path = output_path / f"config_{n_patients}p_{n_days}d.txt"
+                try:
+                    with open(config_path, 'w') as f:
+                        f.write("=== Simulation Configuration ===\n\n")
+                        for key, value in sorted(config_metadata.items()):
+                            f.write(f"{key}: {value}\n")
+                    print(f"Configuration metadata saved to {config_path}")
+                except Exception as meta_e:
+                    print(f"Warning: Failed to write config metadata: {meta_e}")
         except Exception as e:
             print(f"An error occurred while exporting to CSV: {e}")

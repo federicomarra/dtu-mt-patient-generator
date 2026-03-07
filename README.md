@@ -31,7 +31,9 @@ A high-fidelity Monte Carlo simulation framework for Type 1 Diabetes glucose dyn
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/federicomarra/dtu-mt-patient-generator
+
+# Navigate to the repository
 cd dtu-mt-patient-generator
 
 # Install dependencies
@@ -103,12 +105,14 @@ instability_hyper_pct = 30.0                  # Max % time in hyperglycemia
 dtu-mt-patient-generator/
 ├── main.py                    # Simulation driver + config
 ├── analyze_simulation.py      # Result analysis tool
+├── test.py                    # Test script
 ├── requirements.txt           # Python dependencies
 ├── README.md                  # This file
 └── src/
     ├── model.py               # Hovorka ODE equations + steady-state solver
     ├── parameters.py          # Monte Carlo patient parameter generation
     ├── input.py               # Meal schedule generation + caching
+    ├── simulation.py          # Simulation loop + rejection sampling
     ├── sensor.py              # CGM measurement with noise
     └── export.py              # CSV/Parquet export + metadata logging
 ```

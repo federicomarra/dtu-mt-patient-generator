@@ -196,7 +196,22 @@ def hovorka_equations(
 
 
 # Initial state functions
-def compute_initial_state_from_insulin(us: float, params: ParameterSet) -> StateVector:
+def compute_initial_state_from_insulin(
+    u_mu: float,
+    params: ParameterSet
+    ) -> StateVector:
+    """
+    Compute initial state from insulin.
+    
+    Parameters:
+    -----------
+    u_mu: basal insulin rate [mU/min]
+    params: parameter set
+    
+    Returns:
+    --------
+    StateVector: initial state
+    """
     BW = params['BW']      # [kg] body weight
     tauI = params['tauI']  # [min] maximum insulin absorption time
     ke = params['ke']      # [1/min] insulin elimination rate from plasma
@@ -208,7 +223,7 @@ def compute_initial_state_from_insulin(us: float, params: ParameterSet) -> State
     F01 = params['F01']    # [mmol/kg/min] non–insulin-dependent glucose flux (per kg)
     k12 = params['k12']    # [1/min] transfer rate between non-accessible and accessible glucose compartments
 
-    Seq = tauI * us                    # [mU] = [min] * [mU/min]
+    Seq = tauI * u_mu                  # [mU] = [min] * [mU/min]
     Ieq = Seq / (ke * tauI * VI * BW)  # [mU/L] = [mU/min] * [1/min] * [kg/L] * [1/kg] * [min]
     x1eq = SI1 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
     x2eq = SI2 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
@@ -252,7 +267,13 @@ def compute_initial_state_from_insulin(us: float, params: ParameterSet) -> State
     )
 
 # Steady state functions
-def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: ParameterSet, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> StateVector:
+def compute_optimal_steady_state_from_glucose(
+    desired_glycemia: float | tuple[float, float],
+    params: ParameterSet,
+    international_units: bool = True,
+    max_iterations: int = 100,
+    print_progress: bool = True
+    ) -> StateVector:
     """
     Compute steady-state via bounded bisection on basal insulin rate [mU/min].
 

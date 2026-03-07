@@ -17,28 +17,49 @@ import numpy as np  # type: ignore[import-untyped]
 
 
 def find_latest_results() -> Path:
-    """Find the most recent CSV results file."""
+    """Find the most recent PARQUET orCSV results file."""
     results_dir = Path("monte_carlo_results")
     if not results_dir.exists():
         raise FileNotFoundError("No monte_carlo_results directory found")
-    
+
+    # Find all PARQUET files
+    parquet_files = list(results_dir.glob("**/results_*.parquet"))
     # Find all CSV files
     csv_files = list(results_dir.glob("**/results_*.csv"))
-    if not csv_files:
-        raise FileNotFoundError("No results CSV files found")
+
+    if not csv_files and not parquet_files:
+        raise FileNotFoundError("No results PARQUET or CSV files found")
     
     # Sort by modification time, get most recent
-    latest = max(csv_files, key=lambda p: p.stat().st_mtime)
-    return latest
+    if csv_files:
+        latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
+    else:
+        latest_csv = None
+    if parquet_files:
+        latest_parquet = max(parquet_files, key=lambda p: p.stat().st_mtime)
+    else:
+        latest_parquet = None
 
+    print(f"Latest CSV: {latest_csv}")
+    print(f"Latest Parquet: {latest_parquet}")
 
-def analyze_results(csv_path: Path) -> None:
+    if csv_files and parquet_files and latest_csv.stat().st_mtime >= latest_parquet.stat().st_mtime:
+        return latest_parquet
+    elif parquet_files:
+        return latest_parquet
+    else:
+        return latest_csv
+
+def analyze_results(file_path: Path) -> None:
     """Analyze simulation results and print statistics."""
     print(f"\n{'='*70}")
-    print(f"Analyzing: {csv_path}")
+    print(f"Analyzing: {file_path}")
     print(f"{'='*70}\n")
     
-    df: pd.DataFrame = pd.read_csv(csv_path)  # type: ignore[assignment]
+    if file_path.suffix == '.parquet':
+        df: pd.DataFrame = pd.read_parquet(file_path)  # type: ignore[assignment]
+    else:
+        df: pd.DataFrame = pd.read_csv(file_path)  # type: ignore[assignment]
     
     # Auto-detect unit (mg/dL vs mmol/L)
     glucose_max = float(df['blood_glucose'].max())  # type: ignore[arg-type]
@@ -119,15 +140,15 @@ def analyze_results(csv_path: Path) -> None:
 if __name__ == "__main__":
     try:
         if len(sys.argv) > 1:
-            csv_path = Path(sys.argv[1])
+            file_path = Path(sys.argv[1])
         else:
-            csv_path = find_latest_results()
+            file_path = find_latest_results()
         
-        if not csv_path.exists():
-            print(f"Error: File not found: {csv_path}")
+        if not file_path.exists():
+            print(f"Error: File not found: {file_path}")
             sys.exit(1)
         
-        analyze_results(csv_path)
+        analyze_results(file_path)
         
     except FileNotFoundError as e:
         print(f"Error: {e}")

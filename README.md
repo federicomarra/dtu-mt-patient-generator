@@ -10,7 +10,8 @@ A high-fidelity Monte Carlo simulation framework for Type 1 Diabetes glucose dyn
 - **Safety Controls**:
   - Hypo-guard: Automatic basal suspension at configurable glucose threshold
   - Hypo-rescue: Proportional glucose injection below critical threshold
-- **Patient-Specific Dosing**: Insulin-to-carb ratios scaled by individual insulin sensitivity (SI3)
+- **Patient-Specific Dosing**: Per-patient ICR and ISF computed via bisection-based identification
+- **Sensitivity Identification**: Automated ICR (insulin-to-carb ratio) and ISF (insulin sensitivity factor) computation for each patient
 - **Rejection Sampling**: Two-stage filtering eliminates physiologically unstable parameter combinations
 - **CGM Noise Simulation**: Autocorrelated AR(1) noise model for realistic sensor error
 - **Reproducibility**: Fully seeded random number generation for deterministic results
@@ -67,16 +68,17 @@ Edit simulation parameters in `main.py`:
 ```python
 @dataclass
 class SimulationConfig:
-    n_patients: int = 10                       # Number of patients in cohort
-    n_days: int = 5                            # Simulation duration (days)
-    random_seed: Optional[int] = 42            # For reproducibility
+    n_patients: int = 100                      # Number of patients in cohort
+    n_days: int = 7                            # Simulation duration (days)
+    random_seed: Optional[int] = None          # For reproducibility
     
     # CGM Noise
     noise_std: float = 0.10                    # Sensor noise (mmol/L)
     noise_autocorr: float = 0.7                # AR(1) autocorrelation
     
     # Insulin Dosing
-    insulin_sensitivity: float = 12.0          # Baseline I:C ratio (g/U)
+    init_insulin_carbo_ratio: float = 19.3     # Initial ICR guess [g/U]
+    init_insulin_sensitivity_factor: float = 3.1  # Initial ISF guess [mmol/L/U]
     basal_hourly: float = 0.5                  # Basal rate (U/hr)
     use_calibrated_basal: bool = True          # Derive from steady state
     
@@ -105,14 +107,17 @@ instability_hyper_pct = 30.0                  # Max % time in hyperglycemia
 dtu-mt-patient-generator/
 ├── main.py                    # Simulation driver + config
 ├── analyze_simulation.py      # Result analysis tool
-├── test.py                    # Test script
 ├── requirements.txt           # Python dependencies
 ├── README.md                  # This file
+├── test/
+│   ├── test_simulation.py     # Simulation integration test
+│   └── test_sensitivity.py    # ICR/ISF sensitivity tests
 └── src/
     ├── model.py               # Hovorka ODE equations + steady-state solver
     ├── parameters.py          # Monte Carlo patient parameter generation
     ├── input.py               # Meal schedule generation + caching
     ├── simulation.py          # Simulation loop + rejection sampling
+    ├── sensitivity.py         # ICR/ISF identification via bisection
     ├── sensor.py              # CGM measurement with noise
     └── export.py              # CSV/Parquet export + metadata logging
 ```
@@ -152,7 +157,7 @@ Each patient is initialized at a stable fasting state (target: 100 mg/dL) using 
 | Afternoon Snack | 3:00-4:30pm | 12-25 | 5-10 |
 | Dinner | 6:30-8:00pm | 50-75 | 20-25 |
 
-Meals are deterministically jittered (±30 min) and bolus insulin is delivered 10 minutes pre-meal.
+Meals are deterministically jittered (±30 min) and bolus insulin is delivered 15 minutes pre-meal.
 
 ### 4. ODE Simulation
 
@@ -164,8 +169,8 @@ Each day is simulated using SciPy's `solve_ivp` (RK45 method) with:
 
 **Patient-Specific Scaling**:
 
-- Insulin sensitivity: `12.0 g/U × SI3_ratio` (clamped to [10.0, 14.0])
-- SI3 ratio: Limited to ±15% of reference (0.85-1.15)
+- **ICR** (insulin-to-carb ratio): Per-patient identification via bisection using `find_icr()` in `src/sensitivity.py`
+- **ISF** (insulin sensitivity factor): Per-patient identification via bisection using `find_isf()` in `src/sensitivity.py`
 - Basal rate: Derived from steady-state insulin level
 
 ### 5. Post-Simulation Rejection

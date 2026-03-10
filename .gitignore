@@ -188,3 +188,4 @@ cython_debug/
 # Folder data
 .idea/
 /monte_carlo_results
+CLAUDE.md

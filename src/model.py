@@ -1,10 +1,15 @@
-# Library Imports
+from __future__ import annotations
+
+from typing import Callable
+
 import numpy as np
 
-
-# File imports
 from src.sensor import measure_glycemia
 
+# Type aliases
+ParameterSet = dict[str, float]
+StateVector = list[float]
+InputFunc = Callable[..., tuple[float, float]]
 
 # Helper functions
 def state_listify(Q1: float, Q2: float, S1: float, S2: float, I: float, x1: float, x2: float, x3: float, D1: float, D2: float) -> list[float]:
@@ -18,77 +23,113 @@ def state_listify(Q1: float, Q2: float, S1: float, S2: float, I: float, x1: floa
     }
     return [x["Q1"], x["Q2"], x["S1"], x["S2"], x["I"], x["x1"], x["x2"], x["x3"], x["D1"], x["D2"]]
 
-def state_unlistify(x):
+def state_unlistify(x: StateVector) -> tuple[float, float, float, float, float, float, float, float, float, float]:
     """Helper function to unpack state variables from a list."""
     Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
     return Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
 
-
-
 # Model equations
-def hovorka_equations(t, x, params, input_func) -> list[float]:
+def hovorka_equations(
+    t: int,
+    x: StateVector,
+    params: ParameterSet,
+    input_func: InputFunc,
+    scenario: int,
+    patient_id: int = 0,
+    day: int = 0,
+    basal_hourly: float = 0.5,
+    insulin_carbo_ratio: float = 2.0,
+    meal_schedule: dict[str, float] | None = None,
+    seed: int | None = None,
+) -> StateVector:
     """
-    Standard Hovorka Model ODEs.
+    Standard Hovorka Model ODEs with named intermediate variables for clarity.
+    
     States x: [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
+      Q1, Q2: glucose mass [mmol] in accessible and remote compartments
+      S1, S2: insulin mass [mU] in absorption depots
+      I: plasma insulin [mU/L]
+      x1, x2, x3: insulin action on transport, disposal, EGP
+      D1, D2: meal carbs [mmol] in stomach and intestine
+    
+    Returns: [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
     """
-    # Unpack states
     Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2 = x
 
-    # Unpack parameters
-    MwG = params['MwG']     # Molecular weight of glucose (180.16 mg/mmol)
-    EGP0 = params['EGP0']   # Endogenous glucose production at zero insulin [mmol/kg/min]
-    F01 = params['F01']     # Non-insulin dependent glucose flux [mmol/kg/min]
-    k12 = params['k12']     # Transfer rate between Q1 and Q2 [1/min]
-    ka1 = params['ka1']     # Deactivation rate for x1 [1/min]
-    ka2 = params['ka2']     # Deactivation rate for x2 [1/min]
-    ka3 = params['ka3']     # Deactivation rate for x3 [1/min]
-    SI1 = params['SI1']     # Sensitivity for x1 (transport) [L/min/mU]
-    SI2 = params['SI2']     # Sensitivity for x2 (disposal) [L/min/mU]
-    SI3 = params['SI3']     # Sensitivity for x3 (EGP) [L/mU]
-    ke = params['ke']       # Insulin elimination rate [1/min]
-    VI = params['VI']       # Insulin distribution volume [L/kg]
-    VG = params['VG']       # Glucose distribution volume [L/kg]
-    tauI = params['tauI'] # Insulin absorption time constant [min]
-    tauG = params['tauG'] # Meal absorption time constant [min]
-    Ag = params['Ag']       # Carbohydrate bioavailability (fraction)
-    BW = params['BW']       # Body weight [kg]
+    EGP0 = float(params["EGP0"])
+    F01 = float(params["F01"])
+    k12 = float(params["k12"])
+    ka1 = float(params["ka1"])
+    ka2 = float(params["ka2"])
+    ka3 = float(params["ka3"])
+    SI1 = float(params["SI1"])
+    SI2 = float(params["SI2"])
+    SI3 = float(params["SI3"])
+    ke = float(params["ke"])
+    VI = float(params["VI"])
+    VG = float(params["VG"])
+    tauI = float(params["tauI"])
+    tauG = float(params["tauG"])
+    Ag = float(params["Ag"])
+    BW = float(params["BW"])
 
-    # Get inputs (Insulin u(t) and Carbs d(t)) at current time t
-    u_t, d_t = input_func(t)
-    # Convert insulin from U/min to mU/min
-    U = u_t
-    # Convert carbs from mg/min to mmol/min (MwG = 180.16 mg/mmol)
-    D = d_t / MwG
+    if meal_schedule is None:
+        u_t, d_t = input_func(
+            t,
+            patient_id=patient_id,
+            day=day,
+            basal_hourly=basal_hourly,
+            scenario=scenario,
+            insulin_carbo_ratio=insulin_carbo_ratio,
+            seed=seed,
+        )
+    else:
+        u_t, d_t = input_func(
+            t,
+            patient_id=patient_id,
+            day=day,
+            basal_hourly=basal_hourly,
+            scenario=scenario,
+            insulin_carbo_ratio=insulin_carbo_ratio,
+            meal_schedule=meal_schedule,
+            seed=seed,
+        )
+    U = float(u_t)
+    # Convert carbs from g/min to mmol/min
+    # d_t is provided in mg/min from input.py, convert to mmol/min.
+    D = float(d_t) / float(params["MwG"])
     # Calculate current glucose concentration in blood (mmol/L)
-    G = Q1 / (VG * BW)
+    G = Q1 / (VG * BW) if (VG * BW) > 0 else 0.0
 
 
     # --- 1. CHO ABSORPTION ---
+    # Note: If multiple meals occur simultaneously in input_func, only the last D value
+    # is used (overwrites previous); carbs can be lost. See input.py for meal scheduling.
     # eq:2.8a: drift of the glucose concentration in the stomach
     # [mmol/min] = [1 * mmol/min] - [1/min * mmol]
-    dD1 = (Ag * D) - ((1 / tauG) * D1)
+    dD1 = (Ag * D) - ((1.0 / tauG) * D1)
 
     # eq:2.8b: drift of the glucose concentration in the intestine
     # [mmol/min] = [1/min * mmol]
-    dD2 = (1 / tauG) * (D1 - D2)
+    dD2 = (1.0 / tauG) * (D1 - D2)
 
     # eq:2.9: glucose absorption rate in the blood
     # [mmol/min] = [1/min * mmol]
-    UG = (1 / tauG) * D2
+    UG = (1.0 / tauG) * D2
 
 
     # --- 2. INSULIN ABSORPTION ---
     # eq:2.11a: drift of the insulin concentration in the first adipose tissue
     # [mU/min] = [mU/min] - [1/min * mU]
-    dS1 = U - ((1 / tauI) * S1)
+    dS1 = U - ((1.0 / tauI) * S1)
 
     # eq:2.11b: drift of the insulin concentration in the second adipose tissue
     # [mU/min] = [1/min * mU]
-    dS2 = (1 / tauI) * (S1 - S2)
+    dS2 = (1.0 / tauI) * (S1 - S2)
 
     # eq:2.12: insulin absorption rate in the blood
     # [mU/min] = [1/min * mU]
-    UI = (1 / tauI) * S2
+    UI = (1.0 / tauI) * S2
 
     # eq:2.6: drift of the insulin concentration in the blood
     # [mU/L/min] = [mU/min * kg/L * 1/kg] - [1/min] * [mU/L]
@@ -98,24 +139,22 @@ def hovorka_equations(t, x, params, input_func) -> list[float]:
     # --- 3. GLUCOSE KINETICS ---
     # eq:2.4: glucose absorbed by the central neural system
     # [mmol/min] = [mmol/kg/min] * [kg]
-    if G >= 4.5: F01c = F01 * BW
-    else:        F01c = F01 * BW * G / 4.5
+    # Note: max(0.0, G) guards against negative glucose from sensor noise,
+    # preventing F01c from becoming negative (which would increase EGP unphysically)
+    if G >= 4.5:
+        F01c = F01 * BW
+    else:
+        F01c = max(0.0, F01 * BW * max(0.0, G) / 4.5)
 
     # eq:2.5: excretion rate of glucose in the kidneys
     # [mmol/min] = [mmol/L] * [L/kg] * [kg]
-    if G >= 9: FR = 0.003 * (G - 9) * VG * BW
-    else:      FR = 0
+    # Note: Simplified kidney threshold model. Real threshold/gradient more complex,
+    # but this approximation is acceptable for physiological range (40-600 mg/dL)
+    if G >= 9.0:
+        fr = 0.003 * (G - 9.0) * VG * BW
+    else:
+        fr = 0.0
 
-    # eq:2.1: drift of glucose mass in the accessible compartment
-    # [mmol/min] = [mmol/min] - [mmol/min] - [mmol/min] - [1/min * mmol] + [1/min * mmol] + [mmol/min/kg * kg]
-    dQ1 = UG - F01c - FR - (x1 * Q1) + (k12 * Q2) + (EGP0 * BW * (1 - x3))
-
-    # eq:2.2: drift of glucose mass in the non-accessible compartment
-    # [mmol/min] = [1/min * mmol] - [[1/min + 1/min] * mmol]
-    dQ2 = x1 * Q1 - (k12 + x2) * Q2
-
-
-    # --- 4. INSULIN ACTION ---
     # eq:2.13: insulin sensitivity factors
     kb1 = SI1 * ka1  # [min^-2/(mU/L)] = [1/min/(mU/L)] * [1/min]
     kb2 = SI2 * ka2  # [min^-2/(mU/L)] = [1/min/(mU/L)] * [1/min]
@@ -133,16 +172,46 @@ def hovorka_equations(t, x, params, input_func) -> list[float]:
     # [1/min] = [1/min * L/mU] * [mU/L] - [1/min] * [1]
     dx3 = kb3 * I - ka3 * x3
 
-    #dx_t = state_listify(Q1=dQ1, Q2=dQ2, S1=dS1, S2=dS2, I=dI, x1=dx1, x2=dx2, x3=dx3, D1=dD1, D2=dD2)
+    # Transfer rates between glucose compartments
+    # Q1 -> Q2 transfer is insulin-dependent (x1 * Q1)
+    # Q2 -> Q1 transfer is basal diffusion (k12 * Q2)
+    R12 = x1 * Q1
+    R21 = k12 * Q2
+    # Endogenous glucose production
+    EGPc = EGP0 * BW * max(0.0, 1.0 - x3)
 
-    #return state_unlistify(dx_t)
+    # eq:2.1: drift of glucose mass in the accessible compartment
+    # [mmol/min] = [mmol/min] - [mmol/min] - [mmol/min] - [1/min * mmol] + [1/min * mmol] + [mmol/min/kg * kg]
+    # UG: gut absorption, F01c: CNS uptake, fr: renal excretion,
+    # R12: Q1→Q2 transfer, R21: Q2→Q1 transfer, EGPc: liver production
+    dQ1 = UG - F01c - fr - R12 + R21 + EGPc
 
+    # eq:2.2: drift of glucose mass in the non-accessible compartment
+    # [mmol/min] = [1/min * mmol] - [[1/min + 1/min] * mmol]
+    dQ2 = R12 - (k12 + x2) * Q2
+
+    # Note: No state bounds validation - ODE can produce negative masses (Q1<0, etc.)
+    # if parameters are pathological. Consider adding clipping for production use.
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2]
 
 
-
 # Initial state functions
-def compute_initial_state_from_insulin(us: float, params: dict) -> list:
+def compute_initial_state_from_insulin(
+    u_mu: float,
+    params: ParameterSet
+    ) -> StateVector:
+    """
+    Compute initial state from insulin.
+    
+    Parameters:
+    -----------
+    u_mu: basal insulin rate [mU/min]
+    params: parameter set
+    
+    Returns:
+    --------
+    StateVector: initial state
+    """
     BW = params['BW']      # [kg] body weight
     tauI = params['tauI']  # [min] maximum insulin absorption time
     ke = params['ke']      # [1/min] insulin elimination rate from plasma
@@ -154,24 +223,35 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
     F01 = params['F01']    # [mmol/kg/min] non–insulin-dependent glucose flux (per kg)
     k12 = params['k12']    # [1/min] transfer rate between non-accessible and accessible glucose compartments
 
-    Seq = tauI * us                    # [mU] = [min] * [mU/min]
+    Seq = tauI * u_mu                  # [mU] = [min] * [mU/min]
     Ieq = Seq / (ke * tauI * VI * BW)  # [mU/L] = [mU/min] * [1/min] * [kg/L] * [1/kg] * [min]
     x1eq = SI1 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
     x2eq = SI2 * Ieq                   # [1/min] = [1/min] * [L/mU] * [mU/L]
     x3eq = SI3 * Ieq                   # [1] = [L/mU] * [mU/L]
 
-    # -x1*Q1 + k12*Q2 = F01 + EGP0(x3-1) * BW
+    # Fasting steady-state approximation (UG=0, fr≈0):
+    # -x1*Q1 + k12*Q2 = F01c - EGPc
     # x1*Q1 - (k12 + x2)*Q2 = 0
-    b1 = (EGP0 * BW * (x3eq - 1)) + (F01 * BW)  # [mmol/min] = [mmol/kg/min] * [kg] * [1] + [mmol/kg/min] * [kg]
+    F01c = F01 * BW
+    EGPc = EGP0 * BW * max(0.0, 1.0 - x3eq)
+    b1 = F01c - EGPc  # [mmol/min]
     a11 = -x1eq                          # [1/min]
     a12 = k12                            # [1/min]
     # b2 = 0                             # [mmol/min]
     a21 = x1eq                           # [1/min]
     a22 = - k12 - x2eq                   # [1/min]
 
-    Q1eq = b1 / (a11 - (a12 * a21 / a22))  # [mmol] = [mmol/min] / [1/min]
+    # Solve robustly to avoid division-by-zero in singular/near-singular cases.
+    # Closed-form formulas can fail when insulin approaches zero.
+    A = np.array([[a11, a12], [a21, a22]], dtype=np.float64)
+    b = np.array([b1, 0.0], dtype=np.float64)
+    try:
+        q = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        q, *_ = np.linalg.lstsq(A, b, rcond=None)
 
-    Q2eq = - a21 * Q1eq / a22              # [mmol] = [1/min] * [mmol] / [1/min]
+    Q1eq = max(0.0, float(q[0]))
+    Q2eq = max(0.0, float(q[1]))
 
     return state_listify(
         Q1=Q1eq,   # [mmol] glucose in blood
@@ -186,44 +266,77 @@ def compute_initial_state_from_insulin(us: float, params: dict) -> list:
         D2=0,      # [mmol] glucose absorption in the intestine
     )
 
-
-
 # Steady state functions
-def compute_optimal_steady_state_from_glucose(desired_glycemia: float, params: dict, international_units: bool = True, max_iterations: int = 100, print_progress: bool = True) -> tuple[list, float]:
+def compute_optimal_steady_state_from_glucose(
+    params: ParameterSet,
+    desired_glycemia: float | list[float, float],
+    international_units: bool = True,
+    max_iterations: int = 100,
+    print_progress: bool = True
+    ) -> StateVector:
+    """
+    Compute steady-state via bounded bisection on basal insulin rate [mU/min].
+
+    Uses physiological basal bounds and evaluates glycemia from the analytical
+    fasting equilibrium returned by compute_initial_state_from_insulin.
+    """
     if international_units:
-        tolerance = 0.1
+        tolerance = 0.1  # mmol/L
     else:
-        tolerance = 1
-        desired_glycemia = desired_glycemia / (params['MwG'] / 10)
+        # Input desired_glycemia is in mg/dL in this branch.
+        # Convert both target and tolerance to mmol/L for internal comparisons.
+        tolerance = 0.1 * (params['MwG'] / 10.0)  # 1.8 mg/dL
+        desired_glycemia = desired_glycemia / (params['MwG'] / 10.0)
+
+    min_insulin_amount = 1e-5    # [mU/min]
+    max_insulin_amount = 50.0    # [mU/min]
 
     if print_progress:
         print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
 
-    # Bisection search: higher insulin rate (us) → lower steady-state glycemia
-    # Reasonable range for basal insulin rate: 0.1 to 50 mU/min
-    us_low = 0.1    # [mU/min] — very low insulin → very high glucose
-    us_high = 50.0  # [mU/min] — high insulin → very low glucose
+    def eval_glycemia(us: float) -> tuple[float, StateVector]:
+        x = compute_initial_state_from_insulin(us, params)
+        g = measure_glycemia(tuple(x), params)
+        return g, x
+
+    g_low, x_low = eval_glycemia(min_insulin_amount)
+    g_high, x_high = eval_glycemia(max_insulin_amount)
+
+    # Expand upper bound if needed to try bracketing the target.
+    expansions = 0
+    while g_high > desired_glycemia and expansions < 6:
+        max_insulin_amount *= 2.0
+        g_high, x_high = eval_glycemia(max_insulin_amount)
+        expansions += 1
+
+    # If still not bracketed, return the closer endpoint.
+    if not (g_low >= desired_glycemia >= g_high):
+        return x_low if abs(g_low - desired_glycemia) <= abs(g_high - desired_glycemia) else x_high
+
+    best_x = x_low
+    best_err = abs(g_low - desired_glycemia)
 
     for i in range(max_iterations):
-        us_mid = (us_low + us_high) / 2.0
-        x0 = compute_initial_state_from_insulin(us_mid, params)
-        G = measure_glycemia(x0, params)
+        mid = 0.5 * (min_insulin_amount + max_insulin_amount)
+        g_mid, x_mid = eval_glycemia(mid)
+        err = abs(g_mid - desired_glycemia)
 
         if print_progress:
-            print(f"Iteration {i+1}: G= {G:.2f} [mmol/L], us= {us_mid:.4f} [mU/min]")
+            print(f"Iteration {i+1}: G= {g_mid:.2f} [mmol/L], I= {mid:.5f} [mU/min]")
 
-        if np.abs(G - desired_glycemia) < tolerance:
-            return x0, us_mid
+        if err < best_err:
+            best_err = err
+            best_x = x_mid
 
-        # Higher insulin → lower glucose (monotonic in the physiological range)
-        if G > desired_glycemia:
-            us_low = us_mid   # Need more insulin to lower glucose
+        if err < tolerance:
+            return x_mid
+
+        if g_mid > desired_glycemia:
+            min_insulin_amount = mid
         else:
-            us_high = us_mid  # Need less insulin to raise glucose
+            max_insulin_amount = mid
 
-    return x0, us_mid
-
-
+    return best_x
 
 if __name__ == "__main__":
     print("Get steady state testing")
@@ -231,4 +344,4 @@ if __name__ == "__main__":
     #p = generate_monte_carlo_patients(1, standard_patient=True)[0]
     from parameters import get_base_params
     p = get_base_params()
-    compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100000, print_progress=True)
+    compute_optimal_steady_state_from_glucose(p, 100, international_units=False, max_iterations=100000, print_progress=True)

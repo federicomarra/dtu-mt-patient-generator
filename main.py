@@ -1,145 +1,43 @@
 # Hovorka Model Monte Carlo Simulation
+# Main script
 
-# Library Imports
-from __future__ import annotations
-from typing import Dict, List
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
-from tqdm import tqdm
-from pathlib import Path
-from datetime import datetime
-
-# --- 1. The Hovorka Model Equations ---
-from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose
-
-# --- 2. Simulation Helpers ---
-from src.parameters import generate_monte_carlo_patients
-
-# --- 3. Scenario Definition ---
-from src.input import DayScenario, minutes_to_time, N_SCENARIOS
-
-# --- 4. Sensor ---
-from src.sensor import measure_glycemia
-
-# --- 5. Export ---
-from src.export import export_to_formats
-
-
-# --- 6. Main Simulation Loop ---
-def run_simulation(do_export: list[bool] = [True, False], international_unit: bool = True, n_patients: int = 100, n_days: int = 7):
-    if any(do_export):
-        folder_name = "monte_carlo_results"
-        folder_path = Path(folder_name)
-        folder_path.mkdir(parents=True, exist_ok=True)
-        now_string = datetime.now().strftime("%Y%m%d_%H%M%S")
-        now_sim_folder_path = folder_path / now_string
-        now_sim_folder_path.mkdir(parents=True, exist_ok=True)
-
-    patients = generate_monte_carlo_patients(n_patients, standard_patient=False)
-
-    # Time span for 24 hours
-    minutes_per_day = int(24 * 60)
-    t_eval = np.linspace(0, minutes_per_day, minutes_per_day + 1)  # 0 to 1440 inclusive
-
-    plt.figure(figsize=(12, 6))
-
-    results_tot: Dict[int, dict] = {}
-    results_list: List[np.ndarray] = []
-
-    print(f"Running Monte Carlo Simulation for {n_patients} patients...")
-    desc_text = "\033[34mSimulating patients\033[0m"
-    for i, p in enumerate(tqdm(patients, desc=desc_text, unit="patient", colour="blue")):
-        results_tot[i] = {"patient_id": i, "params": p, "days": {}}
-        
-        # Initial Conditions for each patient
-        # Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2
-        x0_curr, u_init = compute_optimal_steady_state_from_glucose(5.5, p, international_units=True, max_iterations=100, print_progress=False)
-        
-        for day in range(n_days):
-            scenario = 1  #TODO: Implement multiple scenarios
-            #scenario = np.random.randint(1, N_SCENARIOS + 1) # Randomly select a scenario for this day
-            
-            # Pre-generate all random meal parameters for this day ONCE
-            # This ensures the ODE solver sees deterministic inputs
-            day_scenario = DayScenario(scenario=scenario, basal_at_minute=u_init)
-            
-            # Accumulate time offset for plotting
-            t_offset = day * minutes_per_day
-            
-            fx = lambda t, x: hovorka_equations(t, x, p, day_scenario.get_inputs)
-            
-            y_day = []
-            # Solving step-by-step as per MATLAB code
-            for k in range(len(t_eval) - 1):
-                t_start = t_eval[k]
-                t_end = t_eval[k+1]
-                
-                sol = solve_ivp(fx, (t_start, t_end), x0_curr, method='RK45')
-
-                x0_curr = sol.y[:, -1]
-                
-                # Measure glycemia at the end of the step
-                y_val = measure_glycemia(x0_curr, p, noise_std=0.01)
-
-                if k % (60 * n_days) == 0 and international_unit:
-                    print(f"Day {day}: t={minutes_to_time(t_eval[k+1])}  G={y_val:.4f} mmol/L")
-                y_day.append(y_val)
-            
-            y_day = np.array(y_day)
-            
-            if not international_unit: y_day = y_day * (p['MwG'] / 10)  # Convert to mg/dL
-            
-            # Plot in hours: (minutes + offset) / 60
-            plt.plot((t_eval[1:] + t_offset) / 60, y_day, color='blue')
-
-            # Store results for export
-            patient_results = results_tot[i]
-            patient_days = patient_results["days"]
-            patient_days[day] = y_day
-            results_list.append(y_day)
-
-    if any(do_export): export_to_formats(results_tot, n_patients, n_days, now_sim_folder_path, do_export)
-
-    # Plot Mean
-    if results_list:
-        mean_bg = np.mean(results_list, axis=0)
-        # Note: plotting mean for only the first day if we want to show population average per day
-        plt.plot(t_eval[1:] / 60, mean_bg, color='black', linewidth=2, label='Mean Population BG (Day 1)')
-
-    # Formatting and saving plot
-    if international_unit:
-        plt.axhline(3.8, color='r', linestyle='--', label='Hypoglycemia Limit')
-        plt.axhline(10, color='y', linestyle='--', label='Hyperglycemia Limit')
-        plt.ylim(0, 30)
-        plt.ylabel("Blood Glucose [mmol/l]")
-    else:
-        plt.axhline(70, color='r', linestyle='--', label='Hypoglycemia Limit')
-        plt.axhline(180, color='y', linestyle='--', label='Hyperglycemia Limit')
-        plt.ylim(0, 500)
-        plt.ylabel("Blood Glucose [mg/dL]")
-    plt.title(f"Hovorka Model: Monte Carlo Simulation (n patients={n_patients}, n days={n_days})")
-    plt.xlabel("Time [hours]")
-    plt.xticks(np.arange(0, (24 * n_days) + 1, (24 / 8) * n_days))
-    plt.xlim(0, 24 * n_days)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.show()
-
-    if any(do_export): plt.savefig(now_sim_folder_path / "simulation_plot.png") #TODO: fix, cause it saves blank image
-
+from src.simulation import run_simulation
+from src.export import ExportConfig
+from src.simulation import SimulationConfig
 
 if __name__ == "__main__":
-    skipTerminal: bool = True         # Skip terminal input and use default values
-    EXPORT: list[bool] = [True, True]      # [export_to_parquet, export_to_csv]
-    INTERNATIONAL_UNIT: bool = True   # True for mmol/L, False for mg/dL
-    N_PATIENTS: int = 10             # Number of patients to simulate
-    N_DAYS: int = 5                  # Number of days to simulate for each patient
-
-    if not skipTerminal:
-        unit_answer: str = input("Do you prefer international unit: mmol/L instead of mg/dL? (y/n): ").strip().lower()
-        INTERNATIONAL_UNIT = not (unit_answer in {"n", "no", "0", "false", "f", "nope", "mgdl", "mg/dl"})
-        N_PATIENTS = int(input("How many patients do you want to simulate? "))
-        N_DAYS = int(input("How many days do you want to simulate for each patient? "))
-
-    run_simulation(do_export=EXPORT, international_unit=INTERNATIONAL_UNIT, n_patients=N_PATIENTS, n_days=N_DAYS)
+    # Configuration
+    skip_terminal_input: bool = True
+    
+    # Simulation configuration
+    sim_config = SimulationConfig(
+        n_patients=50,
+        n_days=5,
+        international_unit=True,
+        noise_std=0.10,
+        noise_autocorr=0.7,  # Temporal correlation
+        random_scenarios=True,
+        clip_states=True,
+        random_seed=999  # For reproducibility (change for different cohorts)
+    )
+    
+    # Export configuration
+    export_config = ExportConfig(
+        export_to_parquet=True,
+        export_to_csv=False
+    )
+    
+    # Interactive input (if enabled)
+    if not skip_terminal_input:
+        unit_answer: str = input("Use international units, mmol/L instead of mg/dL? (y/n): ").strip().lower()
+        sim_config.international_unit = unit_answer not in {"n", "no", "0", "false", "f"}
+        
+        sim_config.n_patients = int(input("Number of patients to simulate: "))
+        sim_config.n_days = int(input("Number of days per patient: "))
+        
+        noise_answer = input(f"CGM noise std (mmol/L, default {sim_config.noise_std}): ").strip()
+        if noise_answer:
+            sim_config.noise_std = float(noise_answer)
+    
+    # Run simulation
+    run_simulation(config=sim_config, export_config=export_config)

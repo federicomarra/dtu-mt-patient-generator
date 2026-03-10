@@ -1,477 +1,647 @@
-import numpy as np
+from __future__ import annotations
 
-N_SCENARIOS = 6  # Number of different input scenarios (e.g., different meal times, insulin doses)
+import numpy as np
+from typing import TypedDict, Optional, Tuple
+
+N_SCENARIOS: int = 6  # Number of different input scenarios (e.g., different meal times, insulin doses)
+
+
+# ============================================================================
+# Time Conversion Helper
+# ============================================================================
 
 def time_to_minutes(h: int, m: int) -> int:
     """Convert hours and minutes to total minutes."""
     return h * 60 + m
 
-def minutes_to_time(minutes) -> str:
-    """Convert total minutes to HH:MM format."""
-    minutes = int(minutes)
-    hours = minutes // 60
-    mins = minutes % 60
-    return f"{hours:02d}:{mins:02d}"
 
-BREAKFAST_CARBS_MIN = 30
-BREAKFAST_CARBS_MAX = 60
-BREAKFAST_TIME_MIN = time_to_minutes(7, 0)
-BREAKFAST_TIME_MAX = time_to_minutes(9, 0)
-BREAKFAST_DURATION_MIN = 10
-BREAKFAST_DURATION_MAX = 15
+# ============================================================================
+# Meal Parameters (Constants)
+# Tuned for realistic 80kg active T1D patient with frequent meals and activity
+# ============================================================================
 
-LUNCH_CARBS_MIN = 50
-LUNCH_CARBS_MAX = 100
-LUNCH_TIME_MIN = time_to_minutes(12, 0)
-LUNCH_TIME_MAX = time_to_minutes(14, 0)
-LUNCH_DURATION_MIN = 25
-LUNCH_DURATION_MAX = 30
+# Breakfast: larger, leisurely eating (15-20 min) at consistent time
+BREAKFAST_CARBS_MIN: int = 45
+BREAKFAST_CARBS_MAX: int = 70
+BREAKFAST_TIME_MIN: int = time_to_minutes(6, 30)
+BREAKFAST_TIME_MAX: int = time_to_minutes(8, 0)
+BREAKFAST_DURATION_MIN: int = 15
+BREAKFAST_DURATION_MAX: int = 20
 
-DINNER_CARBS_MIN = 50
-DINNER_CARBS_MAX = 80
-DINNER_TIME_MIN = time_to_minutes(18, 0)
-DINNER_TIME_MAX = time_to_minutes(21, 0)
-DINNER_DURATION_MIN = 10
-DINNER_DURATION_MAX = 15
+# Morning snack: light, quick (8-12 min) mid-morning snack for activity buffer
+MORNING_SNACK_CARBS_MIN: int = 12
+MORNING_SNACK_CARBS_MAX: int = 20
+MORNING_SNACK_TIME_MIN: int = time_to_minutes(10, 0)
+MORNING_SNACK_TIME_MAX: int = time_to_minutes(11, 0)
+MORNING_SNACK_DURATION_MIN: int = 8
+MORNING_SNACK_DURATION_MAX: int = 12
 
-SNACK_CARBS_MIN = 10
-SNACK_CARBS_MAX = 30
-SNACK_TIME_MIN = time_to_minutes(10, 0)
-SNACK_TIME_MAX = time_to_minutes(11, 0)
-SNACK_DURATION_MIN = 5
-SNACK_DURATION_MAX = 10
+# Lunch: moderate (50-75g) with realistic 20-25 min eating window
+LUNCH_CARBS_MIN: int = 50
+LUNCH_CARBS_MAX: int = 75
+LUNCH_TIME_MIN: int = time_to_minutes(12, 0)
+LUNCH_TIME_MAX: int = time_to_minutes(13, 0)
+LUNCH_DURATION_MIN: int = 20
+LUNCH_DURATION_MAX: int = 25
 
-PREANNOUNCED_BOLUS_TIME = 15
-BOLUS_DURATION = 1
+# Afternoon snack: light, mid-afternoon (15:00-16:30) for activity afternoon
+AFTERNOON_SNACK_CARBS_MIN: int = 12
+AFTERNOON_SNACK_CARBS_MAX: int = 25
+AFTERNOON_SNACK_TIME_MIN: int = time_to_minutes(15, 0)
+AFTERNOON_SNACK_TIME_MAX: int = time_to_minutes(16, 30)
+AFTERNOON_SNACK_DURATION_MIN: int = 5
+AFTERNOON_SNACK_DURATION_MAX: int = 10
+
+# Dinner: moderate with realistic 20-25 min and earlier timing for active schedule
+DINNER_CARBS_MIN: int = 50
+DINNER_CARBS_MAX: int = 75
+DINNER_TIME_MIN: int = time_to_minutes(18, 30)
+DINNER_TIME_MAX: int = time_to_minutes(20, 0)
+DINNER_DURATION_MIN: int = 20
+DINNER_DURATION_MAX: int = 25
+
+# Bolus timing: 15 min pre-meal for fast-paced active schedule
+PREANNOUNCED_BOLUS_TIME: int = 15
+BOLUS_DURATION: int = 1
+
+# ============================================================================
+# Meal Schedule Type
+# ============================================================================
+
+class MealSpec(TypedDict):
+    """Specification of a single meal (time window, carbs, duration)."""
+    time: int           # [min] when meal starts (minutes from 00:00)
+    duration: int       # [min] how long meal lasts
+    carbs: int          # [g] total carbs in meal
 
 
-def scenario_normal(time: int, basal: float, insulin_sensitivity: float):
+class MealSchedule(TypedDict):
+    """Complete daily meal schedule with 5 regularly-scheduled meals."""
+    breakfast: MealSpec
+    morning_snack: MealSpec
+    lunch: MealSpec
+    afternoon_snack: MealSpec
+    dinner: MealSpec
+    missed_meal_id: Optional[int]  # For missed bolus scenario (1-5 or None)
+    late_bolus_id: Optional[int]   # For late bolus scenario (1-5 or None)
+
+
+_PATIENT_SEED_FACTOR: int = 10_000
+_SCENARIO_SEED_FACTOR: int = 1_000_000
+_DAY_SEED_FACTOR: int = 97
+_SMALL_TIME_JITTER_MIN: int = -5
+_SMALL_TIME_JITTER_MAX: int = 6
+_SMALL_CARB_JITTER_PCT: float = 0.06
+_IRREGULAR_DAY_PROBABILITY: float = 0.15
+_IRREGULAR_TIME_JITTER_MIN: int = -20
+_IRREGULAR_TIME_JITTER_MAX: int = 21
+
+
+# ============================================================================
+# Meal Schedule Generation
+# ============================================================================
+
+def generate_meal_schedule(
+    scenario: int = 1,
+    rng: Optional[np.random.Generator] = None,
+) -> MealSchedule:
     """
-    Simulates a normal daily routine by calculating insulin delivery (u) and carbohydrate intake (d) 
-    at a specific time (t), incorporating randomized meals.
-    """
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-
-def scenario_sedentary(time: int, basal: float, insulin_sensitivity: float):
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-
-def scenario_active(time: int, basal: float, insulin_sensitivity: float):
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-
-def scenario_missed_bolus(time: int, basal: float, insulin_sensitivity: float):
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    missed_meal_id = np.random.randint(1, 4)
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION and missed_meal_id != 1:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION and missed_meal_id != 2:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION and missed_meal_id != 3:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION and missed_meal_id != 4:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-def scenario_late_bolus(time: int, basal: float, insulin_sensitivity: float):
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    late_bolus_id = np.random.randint(1, 4)
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if late_bolus_id != 1 and breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-    if late_bolus_id == 1 and breakfast_time <= time <= breakfast_time + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if late_bolus_id != 2 and snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += snack_insulin * 1000
-    if late_bolus_id == 2 and snack_time <= time <= snack_time + BOLUS_DURATION:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if late_bolus_id != 3 and lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-    if late_bolus_id == 3 and lunch_time <= time <= lunch_time + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if late_bolus_id != 4 and dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-    if late_bolus_id == 4 and dinner_time <= time <= dinner_time + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-
-def scenario_long_lunch(time: int, basal: float, insulin_sensitivity: float):
-    u = basal  # Start with basal insulin [mU/min]
-    d = 0      # [mg/min]
-
-    # Breakfast
-    breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-    breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-    breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-    breakfast_insulin = breakfast_carbs / insulin_sensitivity
-    if breakfast_time <= time <= breakfast_time + breakfast_duration:
-        d = breakfast_carbs * 1000 / breakfast_duration
-    if breakfast_time - PREANNOUNCED_BOLUS_TIME <= time <= breakfast_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += breakfast_insulin * 1000
-
-    # Snack
-    snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-    snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-    snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-    snack_insulin = snack_carbs / insulin_sensitivity
-    if snack_time <= time <= snack_time + snack_duration:
-        d = snack_carbs * 1000 / snack_duration
-    if snack_time - PREANNOUNCED_BOLUS_TIME <= time <= snack_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += snack_insulin * 1000
-
-    # Lunch
-    lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-    lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX) * 3
-    lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-    lunch_insulin = lunch_carbs / insulin_sensitivity
-    if lunch_time <= time <= lunch_time + lunch_duration:
-        d = lunch_carbs * 1000 / lunch_duration
-    if lunch_time - PREANNOUNCED_BOLUS_TIME <= time <= lunch_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += lunch_insulin * 1000
-
-    # Dinner
-    dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-    dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-    dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-    dinner_insulin = dinner_carbs / insulin_sensitivity
-    if dinner_time <= time <= dinner_time + dinner_duration:
-        d = dinner_carbs * 1000 / dinner_duration
-    if dinner_time - PREANNOUNCED_BOLUS_TIME <= time <= dinner_time - PREANNOUNCED_BOLUS_TIME + BOLUS_DURATION:
-        u += dinner_insulin * 1000
-
-    return u, d
-
-
-def scenario_inputs(time: int, basal_hourly: float=0.5, scenario: int=1, insulin_sensitivity: float = 10.0):
-    """
-    Defines what happens at time t.
-    Time is in minutes. 0 to 24*60=1440 (24 hours).
-    """
-    # Basal Insulin (constant background)
-    # Example input u is in mU/min. 0.5 U/hr = 500 mU / 60 min = 8.33
-    basal = basal_hourly * 1000 / 60  # Convert U/hr to mU/min
-
-    if scenario == 1:
-        return scenario_normal(time, basal, insulin_sensitivity)
-    elif scenario == 2:
-        return scenario_active(time, basal, insulin_sensitivity)
-    elif scenario == 3:
-        return scenario_sedentary(time, basal, insulin_sensitivity)
-    elif scenario == 4:
-        return scenario_missed_bolus(time, basal, insulin_sensitivity)
-    elif scenario == 5:
-        return scenario_late_bolus(time, basal, insulin_sensitivity)
-    elif scenario == 6:
-        return scenario_long_lunch(time, basal, insulin_sensitivity)
-    else:
-        print(f"Invalid scenario, defaulting to normal scenario.")
-        return scenario_normal(time, basal, insulin_sensitivity)
-
-
-
-
-
-class DayScenario:
-    """
-    Pre-generates all random meal parameters at construction time,
-    then provides a deterministic get_inputs(t) method for the ODE solver.
+    Generate a deterministic daily meal schedule.
     
-    This fixes the critical bug where np.random.randint() inside the ODE RHS 
-    caused different random values on every solver evaluation, leading to 
-    numerical explosion (glycemia ~ 10^300).
+    Parameters:
+    scenario: which scenario (1-6) determines meal variations
+    rng: optional numpy random generator (uses global if None)
+    
+    Returns:
+    MealSchedule dict with all meal timings and carbs for the day.
     """
-    def __init__(self, scenario: int = 1, basal_at_minute: float = 0.5 * 1000 / 60, insulin_sensitivity: float = 10.0):
-        self.basal = basal_at_minute   # [mU/min]
-        self.scenario = scenario
-        self.insulin_sensitivity = insulin_sensitivity
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    # Base meals for all scenarios - 5 regular meals for active patient
+    breakfast: MealSpec = {
+        "time": int(rng.integers(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX + 1)),
+        "duration": int(rng.integers(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX + 1)),
+        "carbs": int(rng.integers(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX + 1)),
+    }
+    
+    morning_snack: MealSpec = {
+        "time": int(rng.integers(MORNING_SNACK_TIME_MIN, MORNING_SNACK_TIME_MAX + 1)),
+        "duration": int(rng.integers(MORNING_SNACK_DURATION_MIN, MORNING_SNACK_DURATION_MAX + 1)),
+        "carbs": int(rng.integers(MORNING_SNACK_CARBS_MIN, MORNING_SNACK_CARBS_MAX + 1)),
+    }
+    
+    lunch: MealSpec = {
+        "time": int(rng.integers(LUNCH_TIME_MIN, LUNCH_TIME_MAX + 1)),
+        "duration": int(rng.integers(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX + 1)),
+        "carbs": int(rng.integers(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX + 1)),
+    }
+    
+    afternoon_snack: MealSpec = {
+        "time": int(rng.integers(AFTERNOON_SNACK_TIME_MIN, AFTERNOON_SNACK_TIME_MAX + 1)),
+        "duration": int(rng.integers(AFTERNOON_SNACK_DURATION_MIN, AFTERNOON_SNACK_DURATION_MAX + 1)),
+        "carbs": int(rng.integers(AFTERNOON_SNACK_CARBS_MIN, AFTERNOON_SNACK_CARBS_MAX + 1)),
+    }
+    
+    dinner: MealSpec = {
+        "time": int(rng.integers(DINNER_TIME_MIN, DINNER_TIME_MAX + 1)),
+        "duration": int(rng.integers(DINNER_DURATION_MIN, DINNER_DURATION_MAX + 1)),
+        "carbs": int(rng.integers(DINNER_CARBS_MIN, DINNER_CARBS_MAX + 1)),
+    }
+    
+    # Scenario-specific modifications
+    missed_meal_id: Optional[int] = None
+    late_bolus_id: Optional[int] = None
+    
+    if scenario == 4:
+        # Long lunch: extend lunch duration by 2×
+        lunch["duration"] = lunch["duration"] * 2
+    elif scenario == 5:
+        # Missed bolus: one of the five meal boluses is skipped (1-5)
+        missed_meal_id = int(rng.integers(1, 6))
+    elif scenario == 6:
+        # Late bolus: one meal gets bolus at meal time instead of 15 min before
+        late_bolus_id = int(rng.integers(1, 6))
+    
+    return {
+        "breakfast": breakfast,
+        "morning_snack": morning_snack,
+        "lunch": lunch,
+        "afternoon_snack": afternoon_snack,
+        "dinner": dinner,
+        "missed_meal_id": missed_meal_id,
+        "late_bolus_id": late_bolus_id,
+    }
 
-        # Pre-generate all random meal parameters ONCE
-        self.breakfast_time = np.random.randint(BREAKFAST_TIME_MIN, BREAKFAST_TIME_MAX)
-        self.breakfast_duration = np.random.randint(BREAKFAST_DURATION_MIN, BREAKFAST_DURATION_MAX)
-        self.breakfast_carbs = np.random.randint(BREAKFAST_CARBS_MIN, BREAKFAST_CARBS_MAX)
-        self.breakfast_insulin = self.breakfast_carbs / insulin_sensitivity
 
-        self.snack_time = np.random.randint(SNACK_TIME_MIN, SNACK_TIME_MAX)
-        self.snack_duration = np.random.randint(SNACK_DURATION_MIN, SNACK_DURATION_MAX)
-        self.snack_carbs = np.random.randint(SNACK_CARBS_MIN, SNACK_CARBS_MAX)
-        self.snack_insulin = self.snack_carbs / insulin_sensitivity
+def _clamp_int(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
 
-        self.lunch_time = np.random.randint(LUNCH_TIME_MIN, LUNCH_TIME_MAX)
-        self.lunch_duration = np.random.randint(LUNCH_DURATION_MIN, LUNCH_DURATION_MAX)
-        self.lunch_carbs = np.random.randint(LUNCH_CARBS_MIN, LUNCH_CARBS_MAX)
-        self.lunch_insulin = self.lunch_carbs / insulin_sensitivity
 
-        self.dinner_time = np.random.randint(DINNER_TIME_MIN, DINNER_TIME_MAX)
-        self.dinner_duration = np.random.randint(DINNER_DURATION_MIN, DINNER_DURATION_MAX)
-        self.dinner_carbs = np.random.randint(DINNER_CARBS_MIN, DINNER_CARBS_MAX)
-        self.dinner_insulin = self.dinner_carbs / insulin_sensitivity
+def _create_seed(
+    seed: Optional[int],
+    patient_id: int,
+    scenario: int,
+    day: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Create a seed for the random number generator.
+    """
+    if seed is None:
+        return None
 
-        # Scenario-specific pre-generated random choices
-        if scenario == 4:  # missed_bolus
-            self.missed_meal_id = np.random.randint(1, 5)
-        if scenario == 5:  # late_bolus
-            self.late_bolus_id = np.random.randint(1, 5)
-        if scenario == 6:  # long_lunch
-            self.lunch_duration = self.lunch_duration * 3
+    value = (
+        int(seed)
+        + int(patient_id) * _PATIENT_SEED_FACTOR
+        + int(scenario) * _SCENARIO_SEED_FACTOR
+    )
+    if day is not None:
+        value += int(day) * _DAY_SEED_FACTOR
+    return value
 
-    def get_inputs(self, t: float) -> tuple[float, float]:
-        """
-        Deterministic input function: returns (u, d) at time t.
-        All random parameters were pre-generated in __init__.
-        """
-        u = self.basal
-        d = 0.0
 
-        # --- Breakfast ---
-        if self.breakfast_time <= t <= self.breakfast_time + self.breakfast_duration:
-            d = self.breakfast_carbs * 1000 / self.breakfast_duration
-        bolus_ok = True
-        if self.scenario == 4 and self.missed_meal_id == 1:
-            bolus_ok = False
-        if bolus_ok:
-            bolus_start = self.breakfast_time - PREANNOUNCED_BOLUS_TIME
-            if self.scenario == 5 and self.late_bolus_id == 1:
-                bolus_start = self.breakfast_time  # late bolus: at meal time
-            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
-                u += self.breakfast_insulin * 1000
+def _seeded_rng(
+    seed: Optional[int],
+    patient_id: int,
+    scenario: int,
+    day: Optional[int] = None,
+) -> np.random.Generator:
+    """
+    Generate seed for the random number generator.
+    """
+    composed_seed = _create_seed(seed, patient_id, scenario, day)
+    if composed_seed is None:
+        return np.random.default_rng()
+    return np.random.default_rng(composed_seed)
 
-        # --- Snack ---
-        if self.snack_time <= t <= self.snack_time + self.snack_duration:
-            d = self.snack_carbs * 1000 / self.snack_duration
-        bolus_ok = True
-        if self.scenario == 4 and self.missed_meal_id == 2:
-            bolus_ok = False
-        if bolus_ok:
-            bolus_start = self.snack_time - PREANNOUNCED_BOLUS_TIME
-            if self.scenario == 5 and self.late_bolus_id == 2:
-                bolus_start = self.snack_time
-            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
-                u += self.snack_insulin * 1000
 
-        # --- Lunch ---
-        if self.lunch_time <= t <= self.lunch_time + self.lunch_duration:
-            d = self.lunch_carbs * 1000 / self.lunch_duration
-        bolus_ok = True
-        if self.scenario == 4 and self.missed_meal_id == 3:
-            bolus_ok = False
-        if bolus_ok:
-            bolus_start = self.lunch_time - PREANNOUNCED_BOLUS_TIME
-            if self.scenario == 5 and self.late_bolus_id == 3:
-                bolus_start = self.lunch_time
-            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
-                u += self.lunch_insulin * 1000
+def _jitter_meal(
+    meal: MealSpec,
+    time_min: int,
+    time_max: int,
+    carbs_min: int,
+    carbs_max: int,
+    duration_min: int,
+    duration_max: int,
+    rng: np.random.Generator,
+    jitter_min: int,
+    jitter_max: int,
+    carb_jitter_pct: float,
+) -> MealSpec:
+    """Add realistic day-to-day jitter to meal timing, carbs, and duration."""
+    time_jitter = int(rng.integers(jitter_min, jitter_max))
+    new_time = _clamp_int(meal["time"] + time_jitter, time_min, time_max)
 
-        # --- Dinner ---
-        if self.dinner_time <= t <= self.dinner_time + self.dinner_duration:
-            d = self.dinner_carbs * 1000 / self.dinner_duration
-        bolus_ok = True
-        if self.scenario == 4 and self.missed_meal_id == 4:
-            bolus_ok = False
-        if bolus_ok:
-            bolus_start = self.dinner_time - PREANNOUNCED_BOLUS_TIME
-            if self.scenario == 5 and self.late_bolus_id == 4:
-                bolus_start = self.dinner_time
-            if bolus_start <= t <= bolus_start + BOLUS_DURATION:
-                u += self.dinner_insulin * 1000
+    carb_factor = 1.0 + float(rng.uniform(-carb_jitter_pct, carb_jitter_pct))
+    new_carbs = _clamp_int(
+        int(round(meal["carbs"] * carb_factor)),
+        carbs_min,
+        carbs_max,
+    )
+    
+    # Add small random duration variation (±1-2 min)
+    duration_jitter = int(rng.integers(-2, 3))
+    new_duration = _clamp_int(meal["duration"] + duration_jitter, duration_min, duration_max)
 
-        return u, d
+    return {
+        "time": new_time,
+        "duration": new_duration,
+        "carbs": new_carbs,
+    }
+
+
+def _build_daily_schedule_from_baseline(
+    baseline: MealSchedule,
+    scenario: int,
+    rng: np.random.Generator,
+) -> MealSchedule:
+    """Build patient-specific daily schedule with realistic variation from baseline."""
+    breakfast = _jitter_meal(
+        baseline["breakfast"],
+        BREAKFAST_TIME_MIN,
+        BREAKFAST_TIME_MAX,
+        BREAKFAST_CARBS_MIN,
+        BREAKFAST_CARBS_MAX,
+        BREAKFAST_DURATION_MIN,
+        BREAKFAST_DURATION_MAX,
+        rng,
+        _SMALL_TIME_JITTER_MIN,
+        _SMALL_TIME_JITTER_MAX,
+        _SMALL_CARB_JITTER_PCT,
+    )
+    morning_snack = _jitter_meal(
+        baseline["morning_snack"],
+        MORNING_SNACK_TIME_MIN,
+        MORNING_SNACK_TIME_MAX,
+        MORNING_SNACK_CARBS_MIN,
+        MORNING_SNACK_CARBS_MAX,
+        MORNING_SNACK_DURATION_MIN,
+        MORNING_SNACK_DURATION_MAX,
+        rng,
+        _SMALL_TIME_JITTER_MIN,
+        _SMALL_TIME_JITTER_MAX,
+        _SMALL_CARB_JITTER_PCT,
+    )
+    lunch = _jitter_meal(
+        baseline["lunch"],
+        LUNCH_TIME_MIN,
+        LUNCH_TIME_MAX,
+        LUNCH_CARBS_MIN,
+        LUNCH_CARBS_MAX,
+        LUNCH_DURATION_MIN,
+        LUNCH_DURATION_MAX,
+        rng,
+        _SMALL_TIME_JITTER_MIN,
+        _SMALL_TIME_JITTER_MAX,
+        _SMALL_CARB_JITTER_PCT,
+    )
+    afternoon_snack = _jitter_meal(
+        baseline["afternoon_snack"],
+        AFTERNOON_SNACK_TIME_MIN,
+        AFTERNOON_SNACK_TIME_MAX,
+        AFTERNOON_SNACK_CARBS_MIN,
+        AFTERNOON_SNACK_CARBS_MAX,
+        AFTERNOON_SNACK_DURATION_MIN,
+        AFTERNOON_SNACK_DURATION_MAX,
+        rng,
+        _SMALL_TIME_JITTER_MIN,
+        _SMALL_TIME_JITTER_MAX,
+        _SMALL_CARB_JITTER_PCT,
+    )
+    dinner = _jitter_meal(
+        baseline["dinner"],
+        DINNER_TIME_MIN,
+        DINNER_TIME_MAX,
+        DINNER_CARBS_MIN,
+        DINNER_CARBS_MAX,
+        DINNER_DURATION_MIN,
+        DINNER_DURATION_MAX,
+        rng,
+        _SMALL_TIME_JITTER_MIN,
+        _SMALL_TIME_JITTER_MAX,
+        _SMALL_CARB_JITTER_PCT,
+    )
+
+    irregular_day = bool(rng.random() < _IRREGULAR_DAY_PROBABILITY)
+    if irregular_day:
+        breakfast = _jitter_meal(
+            breakfast,
+            BREAKFAST_TIME_MIN,
+            BREAKFAST_TIME_MAX,
+            BREAKFAST_CARBS_MIN,
+            BREAKFAST_CARBS_MAX,
+            BREAKFAST_DURATION_MIN,
+            BREAKFAST_DURATION_MAX,
+            rng,
+            _IRREGULAR_TIME_JITTER_MIN,
+            _IRREGULAR_TIME_JITTER_MAX,
+            _SMALL_CARB_JITTER_PCT,
+        )
+        morning_snack = _jitter_meal(
+            morning_snack,
+            MORNING_SNACK_TIME_MIN,
+            MORNING_SNACK_TIME_MAX,
+            MORNING_SNACK_CARBS_MIN,
+            MORNING_SNACK_CARBS_MAX,
+            MORNING_SNACK_DURATION_MIN,
+            MORNING_SNACK_DURATION_MAX,
+            rng,
+            _IRREGULAR_TIME_JITTER_MIN,
+            _IRREGULAR_TIME_JITTER_MAX,
+            _SMALL_CARB_JITTER_PCT,
+        )
+        lunch = _jitter_meal(
+            lunch,
+            LUNCH_TIME_MIN,
+            LUNCH_TIME_MAX,
+            LUNCH_CARBS_MIN,
+            LUNCH_CARBS_MAX,
+            LUNCH_DURATION_MIN,
+            LUNCH_DURATION_MAX,
+            rng,
+            _IRREGULAR_TIME_JITTER_MIN,
+            _IRREGULAR_TIME_JITTER_MAX,
+            _SMALL_CARB_JITTER_PCT,
+        )
+        afternoon_snack = _jitter_meal(
+            afternoon_snack,
+            AFTERNOON_SNACK_TIME_MIN,
+            AFTERNOON_SNACK_TIME_MAX,
+            AFTERNOON_SNACK_CARBS_MIN,
+            AFTERNOON_SNACK_CARBS_MAX,
+            AFTERNOON_SNACK_DURATION_MIN,
+            AFTERNOON_SNACK_DURATION_MAX,
+            rng,
+            _IRREGULAR_TIME_JITTER_MIN,
+            _IRREGULAR_TIME_JITTER_MAX,
+            _SMALL_CARB_JITTER_PCT,
+        )
+        dinner = _jitter_meal(
+            dinner,
+            DINNER_TIME_MIN,
+            DINNER_TIME_MAX,
+            DINNER_CARBS_MIN,
+            DINNER_CARBS_MAX,
+            DINNER_DURATION_MIN,
+            DINNER_DURATION_MAX,
+            rng,
+            _IRREGULAR_TIME_JITTER_MIN,
+            _IRREGULAR_TIME_JITTER_MAX,
+            _SMALL_CARB_JITTER_PCT,
+        )
+
+    missed_meal_id: Optional[int] = None
+    late_bolus_id: Optional[int] = None
+
+    if not irregular_day:
+        if scenario == 4:
+            lunch["duration"] = lunch["duration"] * 2
+        if scenario == 5:
+            missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+        elif scenario == 6:
+            late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+
+    return {
+        "breakfast": breakfast,
+        "morning_snack": morning_snack,
+        "lunch": lunch,
+        "afternoon_snack": afternoon_snack,
+        "dinner": dinner,
+        "missed_meal_id": missed_meal_id,
+        "late_bolus_id": late_bolus_id,
+    }
+
+
+# ============================================================================
+# Meal Computation Helper
+# ============================================================================
+
+def _apply_meal(
+    meal: MealSpec,
+    current_time: int,
+    insulin_carbo_ratio: float,
+    bolus_time: int,
+    missed: bool = False,
+    late_bolus: bool = False,
+) -> Tuple[float, float]:
+    """
+    Compute carb intake and insulin bolus for a single meal at current_time.
+    
+    Parameters:
+    meal: MealSpec with time, duration, carbs
+    current_time: current minute in day
+    insulin_carbo_ratio: carbs per insulin unit [g/unit]
+                        (e.g., 2 = 1 unit covers 2g carbs)
+    bolus_time: pre-bolus time offset (typically -15 min)
+    missed: if True, skip insulin bolus for this meal
+    late_bolus: if True, deliver bolus at meal time instead of pre-bolus
+    
+    Returns:
+    (u_increment, d_increment): insulin [mU/min], carbs [mg/min]
+    """
+    u_inc: float = 0.0
+    d_inc: float = 0.0
+    
+    meal_time = meal["time"]
+    duration = meal["duration"]
+    carbs_grams = meal["carbs"]
+    
+    # Carb intake during meal consumption
+    if meal_time <= current_time < meal_time + duration:
+        d_inc = carbs_grams * 1000 / duration  # mg/min
+    
+    # Insulin bolus
+    if not missed:
+        bolus_amount = carbs_grams / insulin_carbo_ratio  # [units]
+        
+        if late_bolus:
+            # Bolus at meal time
+            if meal_time <= current_time < meal_time + BOLUS_DURATION:
+                u_inc = bolus_amount * 1000  # mU/min
+        else:
+            # Pre-bolus (15 min before meal)
+            bolus_start = meal_time - bolus_time
+            if bolus_start <= current_time < bolus_start + BOLUS_DURATION:
+                u_inc = bolus_amount * 1000  # mU/min
+    
+    return u_inc, d_inc
+
+
+# ============================================================================
+# Main Scenario Function
+# ============================================================================
+
+def scenario_inputs(
+    time: int,
+    basal_hourly: float = 0.5,
+    scenario: int = 1,
+    insulin_carbo_ratio: float = 2.0,
+    meal_schedule: Optional[MealSchedule] = None,
+) -> Tuple[float, float]:
+    """
+    Compute insulin delivery (u) and carbohydrate intake (d) at a given time.
+    
+    Parameters:
+    time: current minute (0-1439 within a day)
+    basal_hourly: basal insulin rate [U/hr]
+    scenario: which scenario to simulate (1-6)
+    insulin_carbo_ratio: insulin-to-carb ratio [g/unit]
+    meal_schedule: optional pre-computed MealSchedule (for determinism)
+                   If None, generates a new one (non-deterministic per call)
+    
+    Returns:
+    (u, d): insulin [mU/min], carbohydrate intake [mg/min]
+    
+    Note:
+    For deterministic simulations, pre-compute meal_schedule once per day
+    and pass it to all 1440 minute calls. See scenario_with_cached_meals().
+    """
+    # Convert basal from U/hr to mU/min
+    basal = basal_hourly * 1000 / 60  # ~8.33 mU/min for 0.5 U/hr
+    
+    # Generate or use provided meal schedule
+    if meal_schedule is None:
+        meal_schedule = generate_meal_schedule(scenario=scenario)
+    
+    u: float = basal
+    d: float = 0.0
+    
+    # Apply each meal - 5 regularly scheduled meals for active patient
+    breakfast_u, breakfast_d = _apply_meal(
+        meal_schedule["breakfast"],
+        time,
+        insulin_carbo_ratio,
+        PREANNOUNCED_BOLUS_TIME,
+        missed=(meal_schedule["missed_meal_id"] == 1),
+        late_bolus=(meal_schedule["late_bolus_id"] == 1),
+    )
+    u += breakfast_u
+    d += breakfast_d
+    
+    morning_snack_u, morning_snack_d = _apply_meal(
+        meal_schedule["morning_snack"],
+        time,
+        insulin_carbo_ratio,
+        PREANNOUNCED_BOLUS_TIME,
+        missed=(meal_schedule["missed_meal_id"] == 2),
+        late_bolus=(meal_schedule["late_bolus_id"] == 2),
+    )
+    u += morning_snack_u
+    d += morning_snack_d
+    
+    lunch_u, lunch_d = _apply_meal(
+        meal_schedule["lunch"],
+        time,
+        insulin_carbo_ratio,
+        PREANNOUNCED_BOLUS_TIME,
+        missed=(meal_schedule["missed_meal_id"] == 3),
+        late_bolus=(meal_schedule["late_bolus_id"] == 3),
+    )
+    u += lunch_u
+    d += lunch_d
+    
+    afternoon_snack_u, afternoon_snack_d = _apply_meal(
+        meal_schedule["afternoon_snack"],
+        time,
+        insulin_carbo_ratio,
+        PREANNOUNCED_BOLUS_TIME,
+        missed=(meal_schedule["missed_meal_id"] == 4),
+        late_bolus=(meal_schedule["late_bolus_id"] == 4),
+    )
+    u += afternoon_snack_u
+    d += afternoon_snack_d
+    
+    dinner_u, dinner_d = _apply_meal(
+        meal_schedule["dinner"],
+        time,
+        insulin_carbo_ratio,
+        PREANNOUNCED_BOLUS_TIME,
+        missed=(meal_schedule["missed_meal_id"] == 5),
+        late_bolus=(meal_schedule["late_bolus_id"] == 5),
+    )
+    u += dinner_u
+    d += dinner_d
+    
+    return u, d
+
+
+# ============================================================================
+# Caching Wrapper for Determinism
+# ============================================================================
+
+_patient_baseline_cache: dict[tuple[int, int], MealSchedule] = {}
+_meal_cache: dict[tuple[int, int, int], MealSchedule] = {}
+
+
+def scenario_with_cached_meals(
+    time: int,
+    patient_id: int,
+    day: int,
+    basal_hourly: float = 0.5,
+    scenario: int = 1,
+    insulin_carbo_ratio: float = 2.0,
+    seed: Optional[int] = None,
+) -> Tuple[float, float]:
+    """
+    Wrapper around scenario_inputs that caches meal schedules per (patient_id, day, scenario).
+    
+    Ensures deterministic behavior with realistic structure:
+    - same patient has a stable baseline routine,
+    - each day has small jitter,
+    - some days have larger deviations (irregular days).
+    
+    Parameters:
+    time: current minute (0-1439)
+    patient_id: unique patient identifier
+    day: day number (for caching key)
+    basal_hourly: basal insulin rate [U/hr]
+    scenario: scenario number (1-6)
+    insulin_carbo_ratio: carb-to-insulin ratio
+    seed: optional random seed (for reproducibility across runs)
+    
+    Returns:
+    (u, d): insulin [mU/min], carbohydrate [mg/min]
+    """
+    patient_key = (patient_id, scenario)
+    cache_key = (patient_id, day, scenario)
+    
+    if cache_key not in _meal_cache:
+        if patient_key not in _patient_baseline_cache:
+            patient_rng = _seeded_rng(
+                seed=seed,
+                patient_id=patient_id,
+                scenario=scenario,
+                day=None,
+            )
+            _patient_baseline_cache[patient_key] = generate_meal_schedule(
+                scenario=1,
+                rng=patient_rng,
+            )
+
+        day_rng = _seeded_rng(
+            seed=seed,
+            patient_id=patient_id,
+            scenario=scenario,
+            day=day,
+        )
+        _meal_cache[cache_key] = _build_daily_schedule_from_baseline(
+            baseline=_patient_baseline_cache[patient_key],
+            scenario=scenario,
+            rng=day_rng,
+        )
+    
+    return scenario_inputs(
+        time,
+        basal_hourly=basal_hourly,
+        scenario=scenario,
+        insulin_carbo_ratio=insulin_carbo_ratio,
+        meal_schedule=_meal_cache[cache_key],
+    )
+
+
+def clear_meal_cache() -> None:
+    """Clear the meal cache (useful for tests or starting a new cohort)."""
+    global _meal_cache
+    global _patient_baseline_cache
+    _meal_cache = {}
+    _patient_baseline_cache = {}

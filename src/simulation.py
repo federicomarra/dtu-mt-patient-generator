@@ -17,6 +17,7 @@ from src.parameters import generate_monte_carlo_patients
 from src.input import scenario_with_cached_meals, N_SCENARIOS, clear_meal_cache
 from src.sensor import measure_glycemia
 from src.export import export_to_formats, ExportConfig
+from src.sensitivity import find_icr, find_isf
 
 @dataclass
 class SimulationConfig:
@@ -31,7 +32,6 @@ class SimulationConfig:
     random_seed: Optional[int] = None  # For reproducibility
     basal_hourly: float = 0.5  # [U/hr] fallback when not using calibrated basal
     use_calibrated_basal: bool = True  # derive basal per patient from calibrated initial steady-state
-    insulin_carbohydrates_ratio: float = 19.3  # [g/U], realistic default range ~8-15
     initial_target_glucose_mgdl: float = 100.0  # safer initialization target
     enable_hypo_guard: bool = True  # dynamically reduce insulin delivery near hypoglycemia
     hypo_guard_mmol: float = 5.0  # guard threshold (~90 mg/dL), anticipatory for 5-meal active schedule
@@ -43,7 +43,8 @@ class SimulationConfig:
     solver_max_step: float = 1.0  # minutes (captures meal/bolus discontinuities)
     derivative_clip: float = 1e5  # hard bound on ODE derivatives
     std_patient: bool = False  # use standard patient parameters
-    insulin_sensitivity_factor: float = 3.1  # [mmol/L/U], realistic default range ~2-4
+    init_insulin_carbo_ratio: float = 19.3  # [g/U], realistic default range ~8-15
+    init_insulin_sensitivity_factor: float = 3.1  # [mmol/L/U], realistic default range ~2-4
 
 
 def _clip_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
@@ -221,9 +222,10 @@ def run_simulation(
             sampled_patients += 1
 
             # Compute initial steady state
+            # TODO: put a range of good glycemias
             x0_initial = compute_optimal_steady_state_from_glucose(
-                config.initial_target_glucose_mgdl,
                 patient_params, 
+                config.initial_target_glucose_mgdl,
                 international_units=False, 
                 max_iterations=100, 
                 print_progress=False
@@ -251,14 +253,19 @@ def run_simulation(
                 "days": {}
             }
 
+
             tau_i = float(patient_params["tauI"])
             us_calibrated_mU_min = float(x0_initial[2]) / tau_i if tau_i > 0 else (config.basal_hourly * 1000.0 / 60.0)
             basal_hourly_patient = (us_calibrated_mU_min * 60.0 / 1000.0) if config.use_calibrated_basal else config.basal_hourly
-            si3_ref = 520.0e-4
-            si3_ratio_raw = float(patient_params.get("SI3", si3_ref)) / si3_ref if si3_ref > 0 else 1.0
-            si3_ratio_limited = float(np.clip(si3_ratio_raw, 0.85, 1.15))
-            insulin_sensitivity_patient = float(np.clip(config.insulin_carbohydrates_ratio * si3_ratio_limited, 10.0, 14.0))
-        
+
+            # Compute ICR and ISF (sensitivity factors)
+            insulin_carbo_ratio_patient = find_icr(params=patient_params, initial_icr=config.init_insulin_carbo_ratio, print_progress=False)
+            insulin_sensitivity_patient = find_isf(params=patient_params, initial_isf=config.init_insulin_sensitivity_factor, print_progress=False)
+
+            # Store into patient params
+            patient_params["ICR"] = insulin_carbo_ratio_patient
+            patient_params["ISF"] = insulin_sensitivity_patient
+
             # Track state across days
             current_state: np.ndarray = np.array(x0_initial, dtype=np.float64)
             patient_full_trajectory: list[np.ndarray] = []
@@ -282,13 +289,13 @@ def run_simulation(
                     x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
                     x_safe = np.clip(x_safe, -1e6, 1e6)
                     basal_hourly_effective = basal_hourly_patient
-                    insulin_sensitivity_effective = insulin_sensitivity_patient
+                    insulin_carbo_ratio_effective = insulin_carbo_ratio_patient
                     g_est = measure_glycemia(tuple(x_safe.tolist()), patient_params, noise_std=0.0, output_unit='mmol/L')
                     if config.enable_hypo_guard:
                         if g_est <= config.hypo_guard_mmol:
                             basal_hourly_effective = 0.0
                             if config.suppress_meal_bolus_on_guard:
-                                insulin_sensitivity_effective = 1e6
+                                insulin_carbo_ratio_effective = 1e6
                     result = hovorka_equations(
                         int(t),
                         x_safe.tolist(),
@@ -298,7 +305,7 @@ def run_simulation(
                         patient_id=sim_patient_id,
                         day=day_idx,
                         basal_hourly=basal_hourly_effective,
-                        insulin_sensitivity=insulin_sensitivity_effective,
+                        insulin_carbo_ratio=insulin_carbo_ratio_effective,
                         meal_schedule=None,
                         seed=config.random_seed,
                     )
@@ -415,7 +422,7 @@ def run_simulation(
     )
 
     # Export results if requested
-    if now_sim_folder_path and (export_config.export_to_parquet or export_config.export_to_csv):
+    if now_sim_folder_path and any(export_config.to_list()):
         try:
             # Prepare config metadata for logging
             config_metadata: dict[str, Any] = {
@@ -428,7 +435,8 @@ def run_simulation(
                 "random_seed": config.random_seed,
                 "basal_hourly_U_hr": config.basal_hourly,
                 "use_calibrated_basal": config.use_calibrated_basal,
-                "insulin_sensitivity_g_U": config.insulin_carbohydrates_ratio,
+                "init_insulin_carbo_ratio_g_U": config.init_insulin_carbo_ratio,
+                "init_insulin_sensitivity_factor_mmol_U": config.init_insulin_sensitivity_factor,
                 "initial_target_glucose_mgdl": config.initial_target_glucose_mgdl,
                 "enable_hypo_guard": config.enable_hypo_guard,
                 "hypo_guard_mmol_L": config.hypo_guard_mmol,
@@ -438,8 +446,8 @@ def run_simulation(
                 "hypo_rescue_gain_per_min": config.hypo_rescue_gain_per_min,
                 "solver_method": config.solver_method,
                 "solver_max_step": config.solver_max_step,
-                "effective_insulin_sensitivity_min_g_U": 10.0,
-                "effective_insulin_sensitivity_max_g_U": 14.0,
+                "effective_insulin_carbo_ratio_min_g_U": 10.0,
+                "effective_insulin_carbo_ratio_max_g_U": 14.0,
                 "si3_ratio_scaling_min": 0.85,
                 "si3_ratio_scaling_max": 1.15,
                 "sampled_patients": sampled_patients,
@@ -532,325 +540,3 @@ def run_simulation(
         print("Plot saved to file.")
     else:
         plt.show()  # type: ignore[misc]
-
-
-# =============================================================================
-# Short-Duration Simulation & Parameter Identification Utilities
-# =============================================================================
-
-def simulate_duration(
-    initial_state: np.ndarray,
-    params: ParameterSet,
-    duration_minutes: int,
-    basal_hourly: float,
-    bolus_mU: float = 0.0,
-    bolus_duration_min: int = 1,
-    cho_mg: float = 0.0,
-    cho_duration_min: int = 15,
-    cho_start_min: int = 0,
-    solver_method: str = "RK45",
-    solver_max_step: float = 1.0,
-    clip_states: bool = True,
-) -> tuple[np.ndarray, float]:
-    """
-    Simulate the Hovorka model for a short duration with explicit inputs.
-
-    Uses a simple inline input function (no meal schedules or scenario caching)
-    that delivers basal insulin, an optional bolus, and an optional CHO load.
-
-    Parameters:
-    -----------
-    initial_state: 10-element state vector [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2]
-    params: patient ParameterSet
-    duration_minutes: simulation length [min]
-    basal_hourly: basal insulin rate [U/hr]
-    bolus_mU: total bolus insulin [mU] delivered over bolus_duration_min starting at t=0
-    bolus_duration_min: duration of bolus delivery [min] (default 1 = near-instantaneous)
-    cho_mg: total carbohydrate load [mg] delivered over cho_duration_min
-    cho_duration_min: duration of CHO intake [min] (default 15)
-    cho_start_min: when CHO intake starts [min] (default 0)
-    solver_method: ODE solver method (default RK45)
-    solver_max_step: max ODE step [min] (default 1.0)
-    clip_states: clip non-negative states to >= 0
-
-    Returns:
-    --------
-    (final_state, final_glycemia_mmol): state at end, noise-free glucose in mmol/L
-    """
-    basal_mU_min = basal_hourly * 1000.0 / 60.0
-    bolus_rate = bolus_mU / max(1, bolus_duration_min)  # [mU/min]
-    cho_rate = cho_mg / max(1, cho_duration_min)  # [mg/min]
-
-    def input_func(
-        t: int,
-        **_kwargs: object,
-    ) -> tuple[float, float]:
-        """Inline input: basal + optional bolus + optional CHO."""
-        u = basal_mU_min
-        d = 0.0
-        # Bolus: delivered during [0, bolus_duration_min)
-        if 0 <= t < bolus_duration_min:
-            u += bolus_rate
-        # CHO: delivered during [cho_start_min, cho_start_min + cho_duration_min)
-        if cho_start_min <= t < cho_start_min + cho_duration_min:
-            d = cho_rate
-        return u, d
-
-    t_eval = np.arange(0, duration_minutes + 1)
-
-    def ode_func(t: float, x: np.ndarray) -> np.ndarray:
-        x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
-        x_safe = np.clip(x_safe, -1e6, 1e6)
-        result = hovorka_equations(
-            int(t),
-            x_safe.tolist(),
-            params,
-            input_func,
-            scenario=0,
-        )
-        dy = np.asarray(result, dtype=np.float64)
-        dy = np.nan_to_num(dy, nan=0.0, posinf=1e5, neginf=-1e5)
-        dy = np.clip(dy, -1e5, 1e5)
-        return dy
-
-    sol = solve_ivp(
-        ode_func,
-        (0, duration_minutes),
-        np.asarray(initial_state, dtype=np.float64),
-        method=solver_method,
-        t_eval=t_eval,
-        rtol=1e-6,
-        atol=1e-8,
-        max_step=solver_max_step,
-    )
-
-    state_traj = np.asarray(sol.y, dtype=np.float64)
-    state_traj = np.nan_to_num(state_traj, nan=0.0, posinf=1e6, neginf=0.0)
-    if clip_states:
-        state_traj = _clip_state_trajectory(state_traj)
-
-    final_state = state_traj[:, -1]
-    final_glycemia = float(measure_glycemia(
-        tuple(final_state.tolist()),
-        params,
-        noise_std=0.0,
-        output_unit='mmol/L',
-    ))
-
-    return final_state, final_glycemia
-
-
-def find_icr(
-    params: ParameterSet,
-    cho_grams: float = 50.0,
-    target_glycemia_mmol: float = 5.5,
-    measurement_time_min: int = 180,
-    initial_glucose_mmol: float = 5.5,
-    tolerance_mmol: float = 0.3,
-    max_iterations: int = 40,
-    print_progress: bool = False,
-) -> dict[str, float]:
-    """
-    Find the insulin-to-carb ratio (ICR) for a patient via bisection.
-
-    Procedure:
-      1. Initialize at steady-state for initial_glucose_mmol
-      2. Give a fixed CHO meal (cho_grams) and a trial bolus
-      3. Simulate for measurement_time_min (default 3h)
-      4. Adjust bolus via bisection until final glycemia ≈ target_glycemia_mmol
-
-    Parameters:
-    -----------
-    params: patient ParameterSet
-    cho_grams: carbohydrate load [g] (default 50)
-    target_glycemia_mmol: desired postprandial glucose [mmol/L]
-    measurement_time_min: time after meal to measure glucose [min] (default 180)
-    initial_glucose_mmol: starting glycemia [mmol/L] (default 5.5)
-    tolerance_mmol: convergence tolerance [mmol/L]
-    max_iterations: max bisection iterations
-    print_progress: print each iteration
-
-    Returns:
-    --------
-    dict with keys: icr_g_per_U, bolus_U, final_glycemia_mmol, basal_hourly_U
-    """
-    # 1. Compute steady state at initial_glucose_mmol
-    x0 = compute_optimal_steady_state_from_glucose(
-        params,
-        initial_glucose_mmol,
-        international_units=True,
-        max_iterations=100,
-        print_progress=False,
-    )
-    x0_arr = np.array(x0, dtype=np.float64)
-
-    # Derive calibrated basal from steady state
-    tau_i = float(params["tauI"])
-    us_calibrated_mU_min = float(x0_arr[2]) / tau_i if tau_i > 0 else 0.5 * 1000.0 / 60.0
-    basal_hourly = us_calibrated_mU_min * 60.0 / 1000.0
-
-    cho_mg = cho_grams * 1000.0  # g -> mg
-
-    # Bisection bounds for bolus: 0 to 30 U (= 30_000 mU)
-    bolus_low_mU = 0.0
-    bolus_high_mU = 30_000.0
-
-    best_bolus_mU = 0.0
-    best_glycemia = float('inf')
-    best_err = float('inf')
-
-    for i in range(max_iterations):
-        trial_bolus_mU = 0.5 * (bolus_low_mU + bolus_high_mU)
-
-        _, final_g = simulate_duration(
-            initial_state=x0_arr,
-            params=params,
-            duration_minutes=measurement_time_min,
-            basal_hourly=basal_hourly,
-            bolus_mU=trial_bolus_mU,
-            bolus_duration_min=1,
-            cho_mg=cho_mg,
-            cho_duration_min=15,
-            cho_start_min=0,
-        )
-
-        err = abs(final_g - target_glycemia_mmol)
-        if print_progress:
-            trial_U = trial_bolus_mU / 1000.0
-            print(f"  ICR iter {i+1}: bolus={trial_U:.3f} U, final_G={final_g:.2f} mmol/L, err={err:.3f}")
-
-        if err < best_err:
-            best_err = err
-            best_bolus_mU = trial_bolus_mU
-            best_glycemia = final_g
-
-        if err < tolerance_mmol:
-            break
-
-        # If final glucose is too high → need more insulin → raise lower bound
-        if final_g > target_glycemia_mmol:
-            bolus_low_mU = trial_bolus_mU
-        else:
-            bolus_high_mU = trial_bolus_mU
-
-    bolus_U = best_bolus_mU / 1000.0
-    icr = cho_grams / bolus_U if bolus_U > 0 else float('inf')
-
-    return {
-        "icr_g_per_U": round(icr, 3),
-        "bolus_U": round(bolus_U, 4),
-        "final_glycemia_mmol": round(best_glycemia, 3),
-        "basal_hourly_U": round(basal_hourly, 4),
-    }
-
-
-def find_isf(
-    params: ParameterSet,
-    initial_glucose_mmol: float = 13.0,
-    target_glycemia_mmol: float = 5.5,
-    measurement_time_min: int = 120,
-    tolerance_mmol: float = 0.3,
-    max_iterations: int = 40,
-    print_progress: bool = False,
-) -> dict[str, float]:
-    """
-    Find the insulin sensitivity factor (ISF) for a patient via bisection.
-
-    Procedure:
-      1. Initialize at steady-state for initial_glucose_mmol (e.g. 13 mmol/L)
-      2. Give a correction bolus (no carbs)
-      3. Simulate for measurement_time_min (default 2h)
-      4. Adjust bolus via bisection until final glycemia ≈ target_glycemia_mmol
-      5. ISF = glucose_drop / bolus_U
-
-    Parameters:
-    -----------
-    params: patient ParameterSet
-    initial_glucose_mmol: starting glycemia [mmol/L] (default 13.0)
-    target_glycemia_mmol: desired final glucose [mmol/L] (default 5.5)
-    measurement_time_min: time after bolus to measure glucose [min] (default 120)
-    tolerance_mmol: convergence tolerance [mmol/L]
-    max_iterations: max bisection iterations
-    print_progress: print each iteration
-
-    Returns:
-    --------
-    dict with keys: isf_mmol_per_U, bolus_U, final_glycemia_mmol, glucose_drop_mmol, basal_hourly_U
-    """
-    # 1. Compute steady state at initial_glucose_mmol
-    x0 = compute_optimal_steady_state_from_glucose(
-        params,
-        initial_glucose_mmol,
-        international_units=True,
-        max_iterations=100,
-        print_progress=False,
-    )
-    x0_arr = np.array(x0, dtype=np.float64)
-
-    # Measure actual initial glycemia (may differ slightly from desired due to bisection tolerance)
-    actual_initial_g = float(measure_glycemia(
-        tuple(x0_arr.tolist()),
-        params,
-        noise_std=0.0,
-        output_unit='mmol/L',
-    ))
-
-    # Derive calibrated basal from steady state
-    tau_i = float(params["tauI"])
-    us_calibrated_mU_min = float(x0_arr[2]) / tau_i if tau_i > 0 else 0.5 * 1000.0 / 60.0
-    basal_hourly = us_calibrated_mU_min * 60.0 / 1000.0
-
-    # Bisection bounds for correction bolus: 0 to 30 U (= 30_000 mU)
-    bolus_low_mU = 0.0
-    bolus_high_mU = 30_000.0
-
-    best_bolus_mU = 0.0
-    best_glycemia = float('inf')
-    best_err = float('inf')
-
-    for i in range(max_iterations):
-        trial_bolus_mU = 0.5 * (bolus_low_mU + bolus_high_mU)
-
-        _, final_g = simulate_duration(
-            initial_state=x0_arr,
-            params=params,
-            duration_minutes=measurement_time_min,
-            basal_hourly=basal_hourly,
-            bolus_mU=trial_bolus_mU,
-            bolus_duration_min=1,
-            cho_mg=0.0,  # No carbs — pure correction
-            cho_duration_min=1,
-            cho_start_min=0,
-        )
-
-        err = abs(final_g - target_glycemia_mmol)
-        if print_progress:
-            trial_U = trial_bolus_mU / 1000.0
-            drop = actual_initial_g - final_g
-            print(f"  ISF iter {i+1}: bolus={trial_U:.3f} U, final_G={final_g:.2f} mmol/L, drop={drop:.2f}, err={err:.3f}")
-
-        if err < best_err:
-            best_err = err
-            best_bolus_mU = trial_bolus_mU
-            best_glycemia = final_g
-
-        if err < tolerance_mmol:
-            break
-
-        # If final glucose is still too high → need more insulin
-        if final_g > target_glycemia_mmol:
-            bolus_low_mU = trial_bolus_mU
-        else:
-            bolus_high_mU = trial_bolus_mU
-
-    bolus_U = best_bolus_mU / 1000.0
-    glucose_drop = actual_initial_g - best_glycemia
-    isf = glucose_drop / bolus_U if bolus_U > 0 else float('inf')
-
-    return {
-        "isf_mmol_per_U": round(isf, 3),
-        "bolus_U": round(bolus_U, 4),
-        "final_glycemia_mmol": round(best_glycemia, 3),
-        "glucose_drop_mmol": round(glucose_drop, 3),
-        "basal_hourly_U": round(basal_hourly, 4),
-    }

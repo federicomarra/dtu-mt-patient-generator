@@ -60,16 +60,8 @@ DINNER_TIME_MAX: int = time_to_minutes(20, 0)
 DINNER_DURATION_MIN: int = 20
 DINNER_DURATION_MAX: int = 25
 
-# Keep SNACK for backward compatibility (same as afternoon snack)
-SNACK_CARBS_MIN: int = AFTERNOON_SNACK_CARBS_MIN
-SNACK_CARBS_MAX: int = AFTERNOON_SNACK_CARBS_MAX
-SNACK_TIME_MIN: int = AFTERNOON_SNACK_TIME_MIN
-SNACK_TIME_MAX: int = AFTERNOON_SNACK_TIME_MAX
-SNACK_DURATION_MIN: int = AFTERNOON_SNACK_DURATION_MIN
-SNACK_DURATION_MAX: int = AFTERNOON_SNACK_DURATION_MAX
-
-# Bolus timing: 10 min pre-meal for fast-paced active schedule
-PREANNOUNCED_BOLUS_TIME: int = 10
+# Bolus timing: 15 min pre-meal for fast-paced active schedule
+PREANNOUNCED_BOLUS_TIME: int = 15
 BOLUS_DURATION: int = 1
 
 # ============================================================================
@@ -78,7 +70,7 @@ BOLUS_DURATION: int = 1
 
 class MealSpec(TypedDict):
     """Specification of a single meal (time window, carbs, duration)."""
-    time: int           # [min] when meal starts
+    time: int           # [min] when meal starts (minutes from 00:00)
     duration: int       # [min] how long meal lasts
     carbs: int          # [g] total carbs in meal
 
@@ -100,7 +92,7 @@ _DAY_SEED_FACTOR: int = 97
 _SMALL_TIME_JITTER_MIN: int = -5
 _SMALL_TIME_JITTER_MAX: int = 6
 _SMALL_CARB_JITTER_PCT: float = 0.06
-_IRREGULAR_DAY_PROBABILITY: float = 0.30
+_IRREGULAR_DAY_PROBABILITY: float = 0.15
 _IRREGULAR_TIME_JITTER_MIN: int = -20
 _IRREGULAR_TIME_JITTER_MAX: int = 21
 
@@ -161,14 +153,14 @@ def generate_meal_schedule(
     missed_meal_id: Optional[int] = None
     late_bolus_id: Optional[int] = None
     
-    if scenario == 3:
+    if scenario == 4:
         # Long lunch: extend lunch duration by 2×
         lunch["duration"] = lunch["duration"] * 2
-    elif scenario == 4:
+    elif scenario == 5:
         # Missed bolus: one of the five meal boluses is skipped (1-5)
         missed_meal_id = int(rng.integers(1, 6))
-    elif scenario == 5:
-        # Late bolus: one meal gets bolus at meal time instead of 10 min before
+    elif scenario == 6:
+        # Late bolus: one meal gets bolus at meal time instead of 15 min before
         late_bolus_id = int(rng.integers(1, 6))
     
     return {
@@ -192,6 +184,9 @@ def _create_seed(
     scenario: int,
     day: Optional[int] = None,
 ) -> Optional[int]:
+    """
+    Create a seed for the random number generator.
+    """
     if seed is None:
         return None
 
@@ -211,6 +206,9 @@ def _seeded_rng(
     scenario: int,
     day: Optional[int] = None,
 ) -> np.random.Generator:
+    """
+    Generate seed for the random number generator.
+    """
     composed_seed = _create_seed(seed, patient_id, scenario, day)
     if composed_seed is None:
         return np.random.default_rng()
@@ -395,13 +393,13 @@ def _build_daily_schedule_from_baseline(
     missed_meal_id: Optional[int] = None
     late_bolus_id: Optional[int] = None
 
-    if scenario == 3:
-        lunch["duration"] = lunch["duration"] * 2
-
-    if scenario == 4 and irregular_day:
-        missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
-    elif scenario == 5 and irregular_day:
-        late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+    if not irregular_day:
+        if scenario == 4:
+            lunch["duration"] = lunch["duration"] * 2
+        if scenario == 5:
+            missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+        elif scenario == 6:
+            late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
 
     return {
         "breakfast": breakfast,
@@ -421,7 +419,7 @@ def _build_daily_schedule_from_baseline(
 def _apply_meal(
     meal: MealSpec,
     current_time: int,
-    insulin_sensitivity: float,
+    insulin_carbo_ratio: float,
     bolus_time: int,
     missed: bool = False,
     late_bolus: bool = False,
@@ -432,7 +430,7 @@ def _apply_meal(
     Parameters:
     meal: MealSpec with time, duration, carbs
     current_time: current minute in day
-    insulin_sensitivity: carbs per insulin unit [g/unit]
+    insulin_carbo_ratio: carbs per insulin unit [g/unit]
                         (e.g., 2 = 1 unit covers 2g carbs)
     bolus_time: pre-bolus time offset (typically -15 min)
     missed: if True, skip insulin bolus for this meal
@@ -454,7 +452,7 @@ def _apply_meal(
     
     # Insulin bolus
     if not missed:
-        bolus_amount = carbs_grams / insulin_sensitivity  # [units]
+        bolus_amount = carbs_grams / insulin_carbo_ratio  # [units]
         
         if late_bolus:
             # Bolus at meal time
@@ -477,7 +475,7 @@ def scenario_inputs(
     time: int,
     basal_hourly: float = 0.5,
     scenario: int = 1,
-    insulin_sensitivity: float = 2.0,
+    insulin_carbo_ratio: float = 2.0,
     meal_schedule: Optional[MealSchedule] = None,
 ) -> Tuple[float, float]:
     """
@@ -487,7 +485,7 @@ def scenario_inputs(
     time: current minute (0-1439 within a day)
     basal_hourly: basal insulin rate [U/hr]
     scenario: which scenario to simulate (1-6)
-    insulin_sensitivity: insulin-to-carb ratio [g/unit]
+    insulin_carbo_ratio: insulin-to-carb ratio [g/unit]
     meal_schedule: optional pre-computed MealSchedule (for determinism)
                    If None, generates a new one (non-deterministic per call)
     
@@ -512,7 +510,7 @@ def scenario_inputs(
     breakfast_u, breakfast_d = _apply_meal(
         meal_schedule["breakfast"],
         time,
-        insulin_sensitivity,
+        insulin_carbo_ratio,
         PREANNOUNCED_BOLUS_TIME,
         missed=(meal_schedule["missed_meal_id"] == 1),
         late_bolus=(meal_schedule["late_bolus_id"] == 1),
@@ -523,7 +521,7 @@ def scenario_inputs(
     morning_snack_u, morning_snack_d = _apply_meal(
         meal_schedule["morning_snack"],
         time,
-        insulin_sensitivity,
+        insulin_carbo_ratio,
         PREANNOUNCED_BOLUS_TIME,
         missed=(meal_schedule["missed_meal_id"] == 2),
         late_bolus=(meal_schedule["late_bolus_id"] == 2),
@@ -534,7 +532,7 @@ def scenario_inputs(
     lunch_u, lunch_d = _apply_meal(
         meal_schedule["lunch"],
         time,
-        insulin_sensitivity,
+        insulin_carbo_ratio,
         PREANNOUNCED_BOLUS_TIME,
         missed=(meal_schedule["missed_meal_id"] == 3),
         late_bolus=(meal_schedule["late_bolus_id"] == 3),
@@ -545,7 +543,7 @@ def scenario_inputs(
     afternoon_snack_u, afternoon_snack_d = _apply_meal(
         meal_schedule["afternoon_snack"],
         time,
-        insulin_sensitivity,
+        insulin_carbo_ratio,
         PREANNOUNCED_BOLUS_TIME,
         missed=(meal_schedule["missed_meal_id"] == 4),
         late_bolus=(meal_schedule["late_bolus_id"] == 4),
@@ -556,7 +554,7 @@ def scenario_inputs(
     dinner_u, dinner_d = _apply_meal(
         meal_schedule["dinner"],
         time,
-        insulin_sensitivity,
+        insulin_carbo_ratio,
         PREANNOUNCED_BOLUS_TIME,
         missed=(meal_schedule["missed_meal_id"] == 5),
         late_bolus=(meal_schedule["late_bolus_id"] == 5),
@@ -581,7 +579,7 @@ def scenario_with_cached_meals(
     day: int,
     basal_hourly: float = 0.5,
     scenario: int = 1,
-    insulin_sensitivity: float = 2.0,
+    insulin_carbo_ratio: float = 2.0,
     seed: Optional[int] = None,
 ) -> Tuple[float, float]:
     """
@@ -598,7 +596,7 @@ def scenario_with_cached_meals(
     day: day number (for caching key)
     basal_hourly: basal insulin rate [U/hr]
     scenario: scenario number (1-6)
-    insulin_sensitivity: carb-to-insulin ratio
+    insulin_carbo_ratio: carb-to-insulin ratio
     seed: optional random seed (for reproducibility across runs)
     
     Returns:
@@ -636,7 +634,7 @@ def scenario_with_cached_meals(
         time,
         basal_hourly=basal_hourly,
         scenario=scenario,
-        insulin_sensitivity=insulin_sensitivity,
+        insulin_carbo_ratio=insulin_carbo_ratio,
         meal_schedule=_meal_cache[cache_key],
     )
 

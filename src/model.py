@@ -38,7 +38,7 @@ def hovorka_equations(
     patient_id: int = 0,
     day: int = 0,
     basal_hourly: float = 0.5,
-    insulin_sensitivity: float = 2.0,
+    insulin_carbo_ratio: float = 2.0,
     meal_schedule: dict[str, float] | None = None,
     seed: int | None = None,
 ) -> StateVector:
@@ -80,7 +80,7 @@ def hovorka_equations(
             day=day,
             basal_hourly=basal_hourly,
             scenario=scenario,
-            insulin_sensitivity=insulin_sensitivity,
+            insulin_carbo_ratio=insulin_carbo_ratio,
             seed=seed,
         )
     else:
@@ -90,7 +90,7 @@ def hovorka_equations(
             day=day,
             basal_hourly=basal_hourly,
             scenario=scenario,
-            insulin_sensitivity=insulin_sensitivity,
+            insulin_carbo_ratio=insulin_carbo_ratio,
             meal_schedule=meal_schedule,
             seed=seed,
         )
@@ -269,7 +269,7 @@ def compute_initial_state_from_insulin(
 # Steady state functions
 def compute_optimal_steady_state_from_glucose(
     params: ParameterSet,
-    desired_glycemia: float | tuple[float, float],
+    desired_glycemia: float | list[float, float],
     international_units: bool = True,
     max_iterations: int = 100,
     print_progress: bool = True
@@ -285,7 +285,7 @@ def compute_optimal_steady_state_from_glucose(
     else:
         # Input desired_glycemia is in mg/dL in this branch.
         # Convert both target and tolerance to mmol/L for internal comparisons.
-        tolerance = 1.0 / (params['MwG'] / 10.0)  # 1 mg/dL in mmol/L
+        tolerance = 0.1 * (params['MwG'] / 10.0)  # 1.8 mg/dL
         desired_glycemia = desired_glycemia / (params['MwG'] / 10.0)
 
     min_insulin_amount = 1e-5    # [mU/min]
@@ -344,4 +344,4 @@ if __name__ == "__main__":
     #p = generate_monte_carlo_patients(1, standard_patient=True)[0]
     from parameters import get_base_params
     p = get_base_params()
-    compute_optimal_steady_state_from_glucose(100, p, international_units=False, max_iterations=100000, print_progress=True)
+    compute_optimal_steady_state_from_glucose(p, 100, international_units=False, max_iterations=100000, print_progress=True)

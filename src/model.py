@@ -268,8 +268,8 @@ def compute_initial_state_from_insulin(
 
 # Steady state functions
 def compute_optimal_steady_state_from_glucose(
-    desired_glycemia: float | tuple[float, float],
     params: ParameterSet,
+    desired_glycemia: float | tuple[float, float],
     international_units: bool = True,
     max_iterations: int = 100,
     print_progress: bool = True

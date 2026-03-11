@@ -189,3 +189,4 @@ cython_debug/
 .idea/
 /monte_carlo_results
 CLAUDE.md
+.vscode/

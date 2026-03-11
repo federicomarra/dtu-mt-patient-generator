@@ -180,12 +180,19 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-
+# Editors
+.idea/
+.idea
+/.idea
+.vscode
+.vscode/
+/.vscode
 
 # Mac
 .DS_Store
 
 # Folder data
-.idea/
 /monte_carlo_results
+
+# Agents markdown files
 CLAUDE.md

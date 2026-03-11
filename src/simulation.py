@@ -164,28 +164,28 @@ def run_simulation(
     clear_meal_cache()
     
     # Setup export directory
+    now_sim_folder_path: Path | None = None
     if any(export_config.to_list()):
-        folder_string = "monte_carlo_results"
-        folder_path = Path(folder_string)
+        folder_path: Path | None = Path("monte_carlo_results")
         try:
             folder_path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             print(f"Warning: Failed to create export {folder_path} directory: {e}")
             folder_path = None
-        today_string = datetime.now().strftime("%Y%m%d")
-        today_folder_path = folder_path / today_string
-        try:
-            today_folder_path.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"Warning: Failed to create export {today_folder_path} directory: {e}")
-            today_folder_path = None
-        now_string = datetime.now().strftime("%H%M%S")
-        now_sim_folder_path = today_folder_path / now_string
-        try:
-            now_sim_folder_path.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"Warning: Failed to create export {now_sim_folder_path} directory: {e}")
-            now_sim_folder_path = None
+        if folder_path is not None:
+            today_folder_path: Path | None = folder_path / datetime.now().strftime("%Y%m%d")
+            try:
+                today_folder_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                print(f"Warning: Failed to create export {today_folder_path} directory: {e}")
+                today_folder_path = None
+            if today_folder_path is not None:
+                now_sim_folder_path = today_folder_path / datetime.now().strftime("%H%M%S")
+                try:
+                    now_sim_folder_path.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    print(f"Warning: Failed to create export {now_sim_folder_path} directory: {e}")
+                    now_sim_folder_path = None
 
     # Generate an oversized candidate pool; keep first N stable patients
     candidate_multiplier = 5

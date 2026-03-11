@@ -31,24 +31,19 @@ def find_latest_results() -> Path:
         raise FileNotFoundError("No results PARQUET or CSV files found")
     
     # Sort by modification time, get most recent
-    if csv_files:
-        latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
-    else:
-        latest_csv = None
-    if parquet_files:
-        latest_parquet = max(parquet_files, key=lambda p: p.stat().st_mtime)
-    else:
-        latest_parquet = None
+    latest_csv: Path | None = max(csv_files, key=lambda p: p.stat().st_mtime) if csv_files else None
+    latest_parquet: Path | None = max(parquet_files, key=lambda p: p.stat().st_mtime) if parquet_files else None
 
     print(f"Latest CSV: {latest_csv}")
     print(f"Latest Parquet: {latest_parquet}")
 
-    if csv_files and parquet_files and latest_csv.stat().st_mtime >= latest_parquet.stat().st_mtime:
+    if latest_csv is not None and latest_parquet is not None:
+        return latest_csv if latest_csv.stat().st_mtime >= latest_parquet.stat().st_mtime else latest_parquet
+    if latest_parquet is not None:
         return latest_parquet
-    elif parquet_files:
-        return latest_parquet
-    else:
+    if latest_csv is not None:
         return latest_csv
+    raise FileNotFoundError("No results PARQUET or CSV files found")
 
 def analyze_results(file_path: Path) -> None:
     """Analyze simulation results and print statistics."""

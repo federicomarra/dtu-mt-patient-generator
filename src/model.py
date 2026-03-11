@@ -269,7 +269,7 @@ def compute_initial_state_from_insulin(
 # Steady state functions
 def compute_optimal_steady_state_from_glucose(
     params: ParameterSet,
-    desired_glycemia: float | list[float, float],
+    desired_glycemia: float | tuple[float, float],
     international_units: bool = True,
     max_iterations: int = 100,
     print_progress: bool = True
@@ -280,19 +280,24 @@ def compute_optimal_steady_state_from_glucose(
     Uses physiological basal bounds and evaluates glycemia from the analytical
     fasting equilibrium returned by compute_initial_state_from_insulin.
     """
+    if isinstance(desired_glycemia, tuple):
+        target_mmol = float(0.5 * (desired_glycemia[0] + desired_glycemia[1]))
+    else:
+        target_mmol = float(desired_glycemia)
+
     if international_units:
         tolerance = 0.1  # mmol/L
     else:
         # Input desired_glycemia is in mg/dL in this branch.
         # Convert both target and tolerance to mmol/L for internal comparisons.
         tolerance = 0.1 * (params['MwG'] / 10.0)  # 1.8 mg/dL
-        desired_glycemia = desired_glycemia / (params['MwG'] / 10.0)
+        target_mmol = target_mmol / (params['MwG'] / 10.0)
 
     min_insulin_amount = 1e-5    # [mU/min]
     max_insulin_amount = 50.0    # [mU/min]
 
     if print_progress:
-        print(f"Computing optimal steady state for glucose: {desired_glycemia} [mmol/L]")
+        print(f"Computing optimal steady state for glucose: {target_mmol} [mmol/L]")
 
     def eval_glycemia(us: float) -> tuple[float, StateVector]:
         x = compute_initial_state_from_insulin(us, params)
@@ -304,22 +309,22 @@ def compute_optimal_steady_state_from_glucose(
 
     # Expand upper bound if needed to try bracketing the target.
     expansions = 0
-    while g_high > desired_glycemia and expansions < 6:
+    while g_high > target_mmol and expansions < 6:
         max_insulin_amount *= 2.0
         g_high, x_high = eval_glycemia(max_insulin_amount)
         expansions += 1
 
     # If still not bracketed, return the closer endpoint.
-    if not (g_low >= desired_glycemia >= g_high):
-        return x_low if abs(g_low - desired_glycemia) <= abs(g_high - desired_glycemia) else x_high
+    if not (g_low >= target_mmol >= g_high):
+        return x_low if abs(g_low - target_mmol) <= abs(g_high - target_mmol) else x_high
 
     best_x = x_low
-    best_err = abs(g_low - desired_glycemia)
+    best_err = abs(g_low - target_mmol)
 
     for i in range(max_iterations):
         mid = 0.5 * (min_insulin_amount + max_insulin_amount)
         g_mid, x_mid = eval_glycemia(mid)
-        err = abs(g_mid - desired_glycemia)
+        err = abs(g_mid - target_mmol)
 
         if print_progress:
             print(f"Iteration {i+1}: G= {g_mid:.2f} [mmol/L], I= {mid:.5f} [mU/min]")
@@ -331,7 +336,7 @@ def compute_optimal_steady_state_from_glucose(
         if err < tolerance:
             return x_mid
 
-        if g_mid > desired_glycemia:
+        if g_mid > target_mmol:
             min_insulin_amount = mid
         else:
             max_insulin_amount = mid

@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 
 from src.parameters import get_base_params
 from src.model import ParameterSet, hovorka_equations, compute_optimal_steady_state_from_glucose, measure_glycemia
@@ -99,7 +99,7 @@ def simulate_duration(
         dy = np.clip(dy, -1e5, 1e5)
         return dy
 
-    sol = solve_ivp(
+    sol = solve_ivp(  # type: ignore[unknown-variable-type]
         ode_func,
         (0, duration_minutes),
         np.asarray(initial_state, dtype=np.float64),
@@ -110,7 +110,7 @@ def simulate_duration(
         max_step=solver_max_step,
     )
 
-    state_traj = np.asarray(sol.y, dtype=np.float64)
+    state_traj = np.asarray(sol.y, dtype=np.float64)  # type: ignore[union-attr]
     state_traj = np.nan_to_num(state_traj, nan=0.0, posinf=1e6, neginf=0.0)
     if clip_states:
         state_traj = _clip_state_trajectory(state_traj)
@@ -348,7 +348,7 @@ def find_sensitivities(
     p: ParameterSet=get_base_params(),
     cho_grams: float=50.0,
     print_progress: bool=False
-) -> tuple[dict, dict]:
+) -> tuple[float, float]:
     """
     Find ICR and ISF for a given parameter set.
 

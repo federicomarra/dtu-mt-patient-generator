@@ -6,7 +6,6 @@ import numpy as np
 
 ParameterSet = dict[str, float]
 
-_CV_KB: float = 0.30
 _TAUI_RATE_MIN: float = 1e-3
 _MIN_POSITIVE: float = 1e-9
 _VG_EXP_NORMAL_MEAN: float = 1.16
@@ -25,12 +24,12 @@ def get_base_params() -> ParameterSet:
         "ka1": 0.0055,  # [1/min] deactivation rate for transport
         "ka2": 0.0683,  # [1/min] deactivation rate for disposal
         "ka3": 0.0304,  # [1/min] deactivation rate for EGP
-        "SI1": 51.2e-4,  # [L/min/mU] sensitivity transport
-        "SI2": 8.2e-4,  # [L/min/mU] sensitivity disposal
-        "SI3": 520.0e-4,  # [L/mU] sensitivity EGP
-        "kb1": 0.0055 * 51.2e-4,  # [min^-2/(mU/L)] sensitivity transport
-        "kb2": 0.0683 * 8.2e-4,  # [min^-2/(mU/L)] sensitivity disposal
-        "kb3": 0.0304 * 520.0e-4,  # [min^-1/(mU/L)] sensitivity EGP
+        "SI1": 32.0e-4,  # [L/min/mU] sensitivity transport  (scaled ~38% down from Hovorka 2004 to match broader T1D population; targets ICR ~12 g/U per Dalla Man et al. 2007)
+        "SI2": 5.1e-4,  # [L/min/mU] sensitivity disposal
+        "SI3": 325.0e-4,  # [L/mU] sensitivity EGP
+        "kb1": 0.0055 * 32.0e-4,  # [min^-2/(mU/L)] sensitivity transport
+        "kb2": 0.0683 * 5.1e-4,  # [min^-2/(mU/L)] sensitivity disposal
+        "kb3": 0.0304 * 325.0e-4,  # [min^-1/(mU/L)] sensitivity EGP
         "ke": 0.138,  # [1/min] elimination rate
         "VI": 0.12,  # [L/kg] insulin distribution volume
         "VG": 0.1484,  # [L/kg] glucose distribution volume
@@ -54,24 +53,6 @@ def _sample_truncated_normal(
         if np.isfinite(sample) and sample > lower:
             return sample
     return max(lower, float(mean))
-
-
-def _sample_lognormal_with_cv(
-    rng: np.random.Generator,
-    mean: float,
-    cv: float,
-) -> float:
-    """
-    Sample log-normal using desired arithmetic mean and coefficient of variation.
-
-    If X ~ LogNormal(mu, sigma^2):
-      CV^2 = exp(sigma^2) - 1
-      mu = ln(mean) - sigma^2 / 2
-    """
-    sigma_sq = float(np.log(1.0 + cv * cv))
-    sigma = float(np.sqrt(sigma_sq))
-    mu = float(np.log(mean) - 0.5 * sigma_sq)
-    return float(rng.lognormal(mean=mu, sigma=sigma))
 
 
 def _is_plausible_patient(p: ParameterSet) -> bool:
@@ -114,16 +95,14 @@ def _is_plausible_patient(p: ParameterSet) -> bool:
 
     # Keep insulin sensitivities within physiological ranges based on published
     # Hovorka distributions (Boiroux-Cap2 thesis, Table 2.1)
-    # SI1 ~ N(51.2e-4, 32.09e-4²), allow ±3σ
-    if not (1.0e-4 <= p["SI1"] <= 1.5e-2):
+    # SI1 ~ N(32e-4, 20e-4²), allow ±3σ → [0, 92e-4]; clamp at 1e-4
+    if not (1.0e-4 <= p["SI1"] <= 1.0e-2):
         return False
-    # SI2 ~ N(8.2e-4, 7.84e-4²), allow ±3σ - was too restrictive, causing outliers
-    if not (1e-5 <= p["SI2"] <= 3.5e-3):
+    # SI2 ~ N(5.1e-4, 4.9e-4²), allow ±3σ → [0, 19.8e-4]; clamp at 1e-5
+    if not (1e-5 <= p["SI2"] <= 2.0e-3):
         return False
-    # SI3 ~ N(520e-4, 306.2e-4²), allow ±2.5σ - was far too restrictive
-    # Published mean: 0.052, std: 0.0306, so reasonable range: -0.025 to 0.13
-    # Use realistic bounds: 0.01 to 0.12 (covers 99% of published distribution)
-    if not (1.0e-2 <= p["SI3"] <= 1.2e-1):
+    # SI3 ~ N(325e-4, 191e-4²), allow ±3σ → [0, 898e-4]; clamp at 1e-3
+    if not (1e-3 <= p["SI3"] <= 9.0e-2):
         return False
 
     # Endogenous glucose production: N(0.0161, 0.0039²)
@@ -143,25 +122,33 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     """Sample one patient parameter set with guarded distributions."""
     p = base.copy()
 
-    # Insulin sensitivity factors: CV = 30% (implemented as true coefficient of variation)
-    p["kb1"] = _sample_lognormal_with_cv(rng, base["kb1"], _CV_KB)
-    p["kb2"] = _sample_lognormal_with_cv(rng, base["kb2"], _CV_KB)
-    p["kb3"] = _sample_lognormal_with_cv(rng, base["kb3"], _CV_KB)
+    # NOTE: kb1/kb2/kb3 are NOT sampled here — the ODE always recomputes them
+    # as kb = SI × ka at runtime (model.py). Sampling them here would have no effect.
 
     # Glucose parameters (truncated normal, no abs-folding)
     p["EGP0"] = _sample_truncated_normal(rng, 0.0161, 0.0039)
     p["F01"] = _sample_truncated_normal(rng, 0.0097, 0.0022)
     p["k12"] = _sample_truncated_normal(rng, 0.0649, 0.0282)
 
-    # Activation rates (ka)
-    p["ka1"] = _sample_truncated_normal(rng, 0.0055, 0.0056)
-    p["ka2"] = _sample_truncated_normal(rng, 0.0683, 0.0507)
-    p["ka3"] = _sample_truncated_normal(rng, 0.0304, 0.0235)
+    # Activation/deactivation rates (ka1, ka2, ka3)
+    # The Boiroux thesis reports CVs of ~100%, 74%, and 77% respectively, but those
+    # values were back-calculated from a 7-patient cohort. Because kb = SI × ka is what
+    # the ODE actually uses, sampling both SI and ka with high independent variance
+    # compounds the effective spread of kb roughly as (CV_SI² + CV_ka²)^0.5.
+    # Holding ka near their nominal values and concentrating variability in SI (which
+    # is the clinically meaningful parameter) better matches published ICR/ISF distributions
+    # (Dalla Man et al. 2007). CV reduced to ~10% here.
+    p["ka1"] = _sample_truncated_normal(rng, 0.0055, 0.0006)   # was std=0.0056 (CV≈102%)
+    p["ka2"] = _sample_truncated_normal(rng, 0.0683, 0.0068)   # was std=0.0507 (CV≈74%)
+    p["ka3"] = _sample_truncated_normal(rng, 0.0304, 0.0030)   # was std=0.0235 (CV≈77%)
 
     # Insulin sensitivities (cannot be negative)
-    p["SI1"] = _sample_truncated_normal(rng, 51.2e-4, 32.09e-4, lower=1e-6)
-    p["SI2"] = _sample_truncated_normal(rng, 8.2e-4, 7.84e-4, lower=1e-6)
-    p["SI3"] = _sample_truncated_normal(rng, 520.0e-4, 306.2e-4, lower=1e-6)
+    # Means scaled ~38% down from Hovorka 2004 (7-patient cohort) to represent a broader
+    # T1D adult population targeting ICR ~12 g/U (Dalla Man et al. 2007, IEEE TBME).
+    # Stds scaled proportionally to preserve published CVs (Boiroux thesis Table 2.1).
+    p["SI1"] = _sample_truncated_normal(rng, 32.0e-4, 20.0e-4, lower=1e-6)
+    p["SI2"] = _sample_truncated_normal(rng, 5.1e-4, 4.9e-4, lower=1e-6)
+    p["SI3"] = _sample_truncated_normal(rng, 325.0e-4, 191.0e-4, lower=1e-6)
 
     # Elimination and volumes
     p["ke"] = _sample_truncated_normal(rng, 0.14, 0.035)
@@ -184,9 +171,11 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     # tauG derivation: ln(tauG) ~ N(3.689, 0.25^2)
     p["tauG"] = float(np.exp(rng.normal(3.689, 0.25)))
 
-    # Carbohydrate bioavailability and body weight
-    p["Ag"] = float(rng.uniform(0.7, 1.2))
-    p["BW"] = float(rng.uniform(65.0, 95.0))
+    # Carbohydrate bioavailability: physiological range 0.7–0.9 for T1D adults
+    # (upper bound was incorrectly 1.2 = 120% absorption, which is physically impossible)
+    p["Ag"] = float(rng.uniform(0.7, 0.9))
+    # Body weight: broadened to 50–110 kg to include lighter/female T1D adults
+    p["BW"] = float(rng.uniform(50.0, 110.0))
 
     return p
 

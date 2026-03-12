@@ -65,11 +65,11 @@ def analyze_results(file_path: Path) -> None:
     if is_mgdl:
         hypo_threshold = 70.0
         hyper_threshold = 180.0
-        guard_threshold = 79.2  # 4.4 mmol/L
+        guard_threshold = 75.6  # 4.2 mmol/L
     else:
         hypo_threshold = 3.9  # ~70 mg/dL
         hyper_threshold = 10.0  # ~180 mg/dL
-        guard_threshold = 4.4  # mmol/L
+        guard_threshold = 4.2  # mmol/L
     
     # Basic statistics
     print(f'=== Glucose Statistics ({unit_str}) ===')

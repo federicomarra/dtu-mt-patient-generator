@@ -3,7 +3,7 @@
 
 from src.simulation import run_simulation
 from src.export import ExportConfig
-from src.simulation import SimulationConfig
+from src.simulation_config import SimulationConfig
 
 if __name__ == "__main__":
     # Configuration
@@ -18,13 +18,13 @@ if __name__ == "__main__":
         noise_autocorr=0.7,  # Temporal correlation
         random_scenarios=True,
         clip_states=True,
-        random_seed=999  # For reproducibility (change for different cohorts)
+        random_seed=42  # For reproducibility (change for different cohorts)
     )
     
     # Export configuration
     export_config = ExportConfig(
         export_to_parquet=True,
-        export_to_csv=False
+        export_to_csv=True
     )
     
     # Interactive input (if enabled)

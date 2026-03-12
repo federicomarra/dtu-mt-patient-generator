@@ -86,7 +86,7 @@ def run_simulation(
     instability_max_glucose_mmol = 17.0
     instability_hyper_pct = 30.0
     quality_max_hypo_pct = 4.0
-    quality_max_hyper_pct = 15.0
+    quality_max_hyper_pct = 12.0
 
     print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")
     print(f"CGM noise: σ={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")

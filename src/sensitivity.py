@@ -3,26 +3,7 @@ from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 
 from src.parameters import get_base_params
 from src.model import ParameterSet, hovorka_equations, compute_optimal_steady_state_from_glucose, measure_glycemia
-
-def _clip_state_trajectory(state_traj: np.ndarray) -> np.ndarray:
-    """
-    Clip state trajectory to non-negative values.
-
-    Parameters:
-    -----------
-    state_traj: (n_states, n_timepoints) array
-
-    Returns:
-    --------
-    (n_states, n_timepoints) array with all values >= 0
-    """
-    # Create a copy to avoid modifying the original array
-    clipped_traj = np.copy(state_traj)
-
-    # Clip all values to be >= 0
-    clipped_traj[clipped_traj < 0] = 0.0
-
-    return clipped_traj
+from src.simulation_utils import clip_state_trajectory
 
 def simulate_duration(
     initial_state: np.ndarray,
@@ -113,7 +94,7 @@ def simulate_duration(
     state_traj = np.asarray(sol.y, dtype=np.float64)  # type: ignore[union-attr]
     state_traj = np.nan_to_num(state_traj, nan=0.0, posinf=1e6, neginf=0.0)
     if clip_states:
-        state_traj = _clip_state_trajectory(state_traj)
+        state_traj = clip_state_trajectory(state_traj)
 
     final_state = state_traj[:, -1]
     final_glycemia = float(measure_glycemia(

@@ -1,248 +1,188 @@
 # Type 1 Diabetes Monte Carlo Simulator
 
-A high-fidelity Monte Carlo simulation framework for Type 1 Diabetes glucose dynamics using the Hovorka physiological model. Generate realistic virtual patient cohorts with diverse physiological parameters for testing control algorithms, meal timing strategies, and safety protocols.
+A Monte Carlo virtual-patient simulator for Type 1 Diabetes based on the Hovorka physiological model. The project focuses on realistic meal-driven glucose dynamics, safety control behaviors, and reproducible cohort generation for algorithm testing.
 
-## Features
+## What This Simulator Does
 
-- **Physiological Model**: Full 11-state Hovorka ODE model with insulin and glucose dynamics
-- **Monte Carlo Sampling**: Generate diverse patient cohorts with physiologically plausible parameter distributions (aligned with published research)
-- **Realistic Meal Scheduling**: 5-meal daily schedule (breakfast, snacks, lunch, dinner) with temporal jitter and realistic eating durations
-- **Safety Controls**:
-  - Hypo-guard: Automatic basal suspension at configurable glucose threshold
-  - Hypo-rescue: Proportional glucose injection below critical threshold
-- **Patient-Specific Dosing**: Per-patient ICR and ISF computed via bisection-based identification
-- **Sensitivity Identification**: Automated ICR (insulin-to-carb ratio) and ISF (insulin sensitivity factor) computation for each patient
-- **Rejection Sampling**: Two-stage filtering eliminates physiologically unstable parameter combinations
-- **CGM Noise Simulation**: Autocorrelated AR(1) noise model for realistic sensor error
-- **Reproducibility**: Fully seeded random number generation for deterministic results
-- **Clean Output**: Progress tracking, rejection statistics, and exportable results (CSV/Parquet)
+- Simulates glucose/insulin dynamics with the Hovorka ODE model.
+- Generates virtual patient cohorts from published parameter distributions.
+- Builds patient-specific meal schedules with deterministic per-seed jitter.
+- Estimates per-patient ICR and ISF before running day-by-day simulations.
+- Applies safety and dosing control layers:
+  - Hypo guard (temporary basal suspension)
+  - Hypo rescue (fixed rescue carbs via gut input)
+  - IOB-aware meal bolus attenuation
+  - ISF-based correction channel with cooldown and IOB subtraction
+- Exports full trajectories and run metadata to CSV/Parquet.
 
 ## Installation
 
-### Requirements
+Requirements:
 
 - Python 3.9+
-- NumPy
-- SciPy
-- Matplotlib
-- pandas
-- tqdm
+- Dependencies in `requirements.txt`
 
-### Setup
+Setup:
 
 ```bash
-# Clone the repository
 git clone https://github.com/federicomarra/dtu-mt-patient-generator
-
-# Navigate to the repository
 cd dtu-mt-patient-generator
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
 ## Quick Start
 
-Run a 10-patient, 5-day Monte Carlo simulation:
+Run simulation:
 
 ```bash
 python main.py
 ```
 
-Output:
-
-- **CSV file**: `monte_carlo_results/YYYYMMDD_HHMMSS/results_10p_5d.csv`
-- **Config metadata**: `monte_carlo_results/YYYYMMDD_HHMMSS/config_10p_5d.txt`
-- **Trajectory plot**: `monte_carlo_results/YYYYMMDD_HHMMSS/plot_10p_5d.png`
-
-Analyze results:
+Analyze latest output:
 
 ```bash
-python analyze_simulation.py monte_carlo_results/YYYYMMDD_HHMMSS/results_10p_5d.csv
+python analyze_simulation.py
 ```
 
-## Configuration
+## Current Project Structure
 
-Edit simulation parameters in `main.py`:
-
-```python
-@dataclass
-class SimulationConfig:
-    n_patients: int = 100                      # Number of patients in cohort
-    n_days: int = 7                            # Simulation duration (days)
-    random_seed: Optional[int] = None          # For reproducibility
-    
-    # CGM Noise
-    noise_std: float = 0.10                    # Sensor noise (mmol/L)
-    noise_autocorr: float = 0.7                # AR(1) autocorrelation
-    
-    # Insulin Dosing
-    init_insulin_carbo_ratio: float = 19.3     # Initial ICR guess [g/U]
-    init_insulin_sensitivity_factor: float = 3.1  # Initial ISF guess [mmol/L/U]
-    basal_hourly: float = 0.5                  # Basal rate (U/hr)
-    use_calibrated_basal: bool = True          # Derive from steady state
-    
-    # Safety Thresholds
-    hypo_guard_mmol: float = 5.0               # Suspend basal below (mmol/L)
-    hypo_rescue_trigger_mmol: float = 4.5      # Emergency glucose below
-    hypo_rescue_gain_per_min: float = 25.0     # Rescue scaling
-    
-    # Initial Conditions
-    initial_target_glucose_mgdl: float = 100.0 # Steady-state target
-```
-
-### Rejection Thresholds
-
-Configured in `main.py` simulation loop:
-
-```python
-rejection_bounds_mmol = (5.0, 6.5)            # Initial glucose acceptance range
-instability_max_glucose_mmol = 20.0           # Max allowed glucose spike
-instability_hyper_pct = 30.0                  # Max % time in hyperglycemia
-```
-
-## Project Structure
-
-```txt
+```text
 dtu-mt-patient-generator/
-├── main.py                    # Simulation driver + config
-├── analyze_simulation.py      # Result analysis tool
-├── requirements.txt           # Python dependencies
-├── README.md                  # This file
-├── test/
-│   ├── test_simulation.py     # Simulation integration test
-│   └── test_sensitivity.py    # ICR/ISF sensitivity tests
-└── src/
-    ├── model.py               # Hovorka ODE equations + steady-state solver
-    ├── parameters.py          # Monte Carlo patient parameter generation
-    ├── input.py               # Meal schedule generation + caching
-    ├── simulation.py          # Simulation loop + rejection sampling
-    ├── sensitivity.py         # ICR/ISF identification via bisection
-    ├── sensor.py              # CGM measurement with noise
-    └── export.py              # CSV/Parquet export + metadata logging
+├── main.py
+├── analyze_simulation.py
+├── requirements.txt
+├── README.md
+├── src/
+│   ├── model.py
+│   ├── parameters.py
+│   ├── input.py
+│   ├── sensitivity.py
+│   ├── sensor.py
+│   ├── export.py
+│   ├── simulation.py
+│   ├── simulation_config.py
+│   ├── simulation_control.py
+│   └── simulation_utils.py
+└── test/
+    └── test_sensitivity.py
 ```
 
-## How It Works
+### Simulation modules (new modular layout)
 
-### 1. Patient Parameter Sampling
+- `src/simulation.py`: orchestration loop, rejection pipeline, plotting, export metadata.
+- `src/simulation_config.py`: `SimulationConfig` dataclass with all tuning knobs.
+- `src/simulation_control.py`: guard/rescue/IOB/ISF correction control policies and controller state.
+- `src/simulation_utils.py`: reusable utilities (noise generation, glycemia measurement, clipping, export folder creation, plotting colors).
 
-Patients are sampled from published physiological distributions (Boiroux et al., Table 2.1):
+## Control and Safety Pipeline
 
-| Parameter | Distribution | Description |
-| ----------- | -------------- | ------------- |
-| `SI1` | N(51.2e-4, 32.09e-4²) | Insulin sensitivity (transport) |
-| `SI2` | N(8.2e-4, 7.84e-4²) | Insulin sensitivity (disposal) |
-| `SI3` | N(520e-4, 306.2e-4²) | Insulin sensitivity (EGP suppression) |
-| `VG` | exp(VG) ~ N(1.16, 0.23²) | Glucose distribution volume |
-| `EGP0` | N(0.0161, 0.0039²) | Endogenous glucose production |
-| `BW` | U(65, 95) kg | Body weight |
+For each patient and each minute:
 
-**Plausibility Filtering**: Parameters outside physiological bounds are rejected during sampling.
+1. Meal insulin and carbs are generated from `scenario_with_cached_meals`.
+2. Guard/IOB/ISF logic adjusts effective insulin delivery:
+   - Guard can suspend basal for a fixed window.
+   - IOB guard can attenuate meal bolus by increasing effective ICR.
+   - ISF correction can add correction insulin above target with cooldown and IOB subtraction.
+3. Rescue logic adds fixed rescue carbs through gut absorption when below trigger.
+4. ODE derivatives are clipped to improve numerical robustness.
 
-### 2. Steady-State Initialization
+## Rejection Pipeline
 
-Each patient is initialized at a stable fasting state (target: 100 mg/dL) using Newton-Raphson optimization to solve for the fixed point of the Hovorka ODE system.
+Patients are filtered in stages:
 
-**Rejection Stage 1**: Patients with initial glucose outside [5.0, 6.5] mmol/L are rejected (indicates pathological parameter combinations).
+1. Initial-state rejection:
+   - Initial glucose must be inside configured bounds.
+2. Instability rejection:
+   - Reject if max glucose too high or hyperglycemia percentage above threshold.
+3. Quality rejection:
+   - Reject if per-patient hypo% or hyper% exceeds quality thresholds.
 
-### 3. Meal Schedule Generation
+The run summary prints rejection counts by reason and safety/control activity percentages.
 
-5-meal daily schedule cached per patient per day:
+## Key Configuration Fields
 
-| Meal | Time Window | Carbs (g) | Duration (min) |
-| ------ | ------------- | ----------- | ---------------- |
-| Breakfast | 6:30-8:00am | 45-70 | 15-20 |
-| Morning Snack | 10:00-11:00am | 12-20 | 8-12 |
-| Lunch | 12:00-1:00pm | 50-75 | 20-25 |
-| Afternoon Snack | 3:00-4:30pm | 12-25 | 5-10 |
-| Dinner | 6:30-8:00pm | 50-75 | 20-25 |
+Configured through `SimulationConfig` in `src/simulation_config.py`.
 
-Meals are deterministically jittered (±30 min) and bolus insulin is delivered 15 minutes pre-meal.
+### Core simulation
 
-### 4. ODE Simulation
+- `n_patients`, `n_days`, `random_seed`
+- `noise_std`, `noise_autocorr`
+- `solver_method`, `solver_max_step`, `derivative_clip`
 
-Each day is simulated using SciPy's `solve_ivp` (RK45 method) with:
+### Basal and patient-specific dosing
 
-- **Time resolution**: 1 minute
-- **State vector**: 10 compartments (glucose, insulin, gut absorption, etc.)
-- **Adaptive stepping**: `max_step=1.0` min to capture meal/bolus discontinuities
+- `basal_hourly`, `use_calibrated_basal`
+- `init_insulin_carbo_ratio`, `init_insulin_sensitivity_factor`
 
-**Patient-Specific Scaling**:
+### Hypoglycemia safety
 
-- **ICR** (insulin-to-carb ratio): Per-patient identification via bisection using `find_icr()` in `src/sensitivity.py`
-- **ISF** (insulin sensitivity factor): Per-patient identification via bisection using `find_isf()` in `src/sensitivity.py`
-- Basal rate: Derived from steady-state insulin level
+- `enable_hypo_guard`
+- `hypo_guard_mmol`
+- `hypo_guard_suspend_min`
+- `hypo_guard_retrigger_cooldown_min`
+- `suppress_meal_bolus_on_guard`
 
-### 5. Post-Simulation Rejection
+- `enable_hypo_rescue`
+- `hypo_rescue_trigger_mmol`
+- `hypo_rescue_carbs_g`
+- `hypo_rescue_duration_min`
+- `hypo_rescue_retrigger_cooldown_min`
 
-**Rejection Stage 2**: After 5-day simulation, reject if:
+### IOB-aware meal attenuation
 
-- Hyperglycemia percentage > 30%, OR
-- Maximum glucose > 20.0 mmol/L
+- `enable_iob_bolus_guard`
+- `iob_guard_units`
+- `iob_full_attenuation_units`
+- `iob_max_icr_multiplier`
 
-This catches rare parameter combinations that pass initial checks but produce unstable trajectories.
+### ISF correction channel
 
-### 6. CGM Noise Addition
+- `enable_correction_isf`
+- `correction_isf_target_mmol`
+- `correction_isf_cooldown_min`
+- `correction_isf_max_bolus_units`
+- `correction_isf_min_bolus_units`
+- `correction_isf_bolus_duration_min`
+- `correction_isf_iob_free_units`
 
-Realistic sensor noise is added via AR(1) autocorrelated process:
+## Outputs
 
-$$\varepsilon[t] = \rho \cdot \varepsilon[t-1] + \sqrt{1-\rho^2} \cdot \eta[t]$$
+Per run, the simulator writes:
 
-where $\eta[t] \sim N(0, \sigma^2)$, $\rho = 0.7$, $\sigma = 0.1$ mmol/L.
+- `results_<Np>p_<Nd>d.csv`
+- `results_<Np>p_<Nd>d.parquet`
+- `config_<Np>p_<Nd>d.txt`
+- `simulation_plot.png`
 
-## Output Format
+inside a timestamped folder under `monte_carlo_results/YYYYMMDD/HHMMSS/`.
 
-### CSV Export
+Metadata includes:
 
-Columns:
+- all run configuration fields
+- rejection counters by reason
+- safety activity percentages
+- ISF correction usage metrics (events, active %, total units)
 
-- `patient_id`: Integer patient identifier (0-indexed)
-- `day`: Day number (0-indexed)
-- `minute`: Minute within day (0-1440)
-- `time`: Formatted time string (HH:MM)
-- `blood_glucose`: CGM reading (mmol/L or mg/dL)
+## Debugging Workflow (Recommended)
 
-### Metadata File
-
-Text file containing:
-
-- All simulation parameters
-- Rejection statistics (count by reason, rejection rate %)
-- Safety thresholds
-- Timestamp and random seed
-
-## Analysis
-
-Use `analyze_simulation.py` to compute:
-
-- **Glycemic metrics**: Mean, min, max, standard deviation
-- **Time-in-range**: % time in hypo (<3.9), target (3.9-10.0), hyper (>10.0)
-- **Per-patient breakdown**: Individual glucose statistics
-- **Per-day TIR**: Tracking control quality over time
-- **Extreme values**: Top 5 hypo/hyper events with timestamps
-
-Example output:
-
-```txt
-=== Glycemic Control ===
-Hypoglycemia (<3.9):       0/72050 (  0.0%)
-In Range (3.9-10.0):    69575/72050 ( 96.6%)
-Hyperglycemia (>10.0):  2475/72050 (  3.4%)
-```
+1. Run simulation with fixed seed.
+2. Check console summary:
+   - rejection reason split
+   - safety activity rates
+   - ISF correction summary
+3. Use `analyze_simulation.py` to inspect:
+   - cohort TIR/hypo/hyper
+   - per-patient outliers
+   - day-by-day control drift
+4. If outliers persist, adjust:
+   - quality rejection thresholds first
+   - then control gains/cooldowns
 
 ## References
 
-**Hovorka Model**:
-
-- Hovorka, R., et al. (2004). "Nonlinear model predictive control of glucose concentration in subjects with type 1 diabetes." *Physiological Measurement*, 25(4), 905.
-
-**Parameter Distributions**:
-
-- Boiroux, D. (2012). "Model Predictive Control for Type 1 Diabetes," PhD Thesis, Technical University of Denmark (DTU), Table 2.1.
-
-**Meal Scheduling**:
-
-- Wilinska, M. E., et al. (2010). "Simulation environment to evaluate closed-loop insulin delivery systems in type 1 diabetes." *Journal of Diabetes Science and Technology*, 4(1), 132-144.
+- Hovorka, R. et al. (2004). Nonlinear model predictive control of glucose concentration in subjects with type 1 diabetes.
+- Boiroux, D. (2012). Model Predictive Control for Type 1 Diabetes, PhD thesis, DTU.
+- Wilinska, M. E. et al. (2010). Simulation environment to evaluate closed-loop insulin delivery systems in type 1 diabetes.
 
 ## License
 

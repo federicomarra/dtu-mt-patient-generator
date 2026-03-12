@@ -2,14 +2,11 @@
 
 # Library Imports
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Optional, cast  # noqa: F401
+from typing import Any
 import numpy as np  # type: ignore[import-untyped]
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 from tqdm import tqdm
-from pathlib import Path
-from datetime import datetime
 
 # --- Imports from src ---
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
@@ -18,130 +15,21 @@ from src.input import scenario_with_cached_meals, N_SCENARIOS, clear_meal_cache
 from src.sensor import measure_glycemia
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
-
-@dataclass
-class SimulationConfig:
-    """Complete simulation configuration."""
-    n_patients: int = 100
-    n_days: int = 7
-    international_unit: bool = True
-    noise_std: float = 0.10  # CGM noise in mmol/L (realistic mild sensor noise)
-    noise_autocorr: float = 0.7  # AR(1) autocorrelation coefficient
-    random_scenarios: bool = False  # Use baseline scenario by default (set True for stress scenarios)
-    clip_states: bool = True  # Clip negative state values
-    random_seed: Optional[int] = None  # For reproducibility
-    basal_hourly: float = 0.5  # [U/hr] fallback when not using calibrated basal
-    use_calibrated_basal: bool = True  # derive basal per patient from calibrated initial steady-state
-    initial_target_glucose_mgdl: float = 100.0  # safer initialization target
-    enable_hypo_guard: bool = True  # dynamically reduce insulin delivery near hypoglycemia
-    hypo_guard_mmol: float = 5.0  # guard threshold (~90 mg/dL), anticipatory for 5-meal active schedule
-    suppress_meal_bolus_on_guard: bool = False  # if True, also suppress meal bolus when guard is active
-    enable_hypo_rescue: bool = True  # optional rescue carbs model (e.g., candy correction)
-    hypo_rescue_trigger_mmol: float = 4.5  # trigger rescue below this level (~81 mg/dL)
-    hypo_rescue_gain_per_min: float = 25.0  # proportional rescue gain [1/min], higher for active schedule
-    solver_method: str = "RK45"  # default non-stiff ODE solver method
-    solver_max_step: float = 1.0  # minutes (captures meal/bolus discontinuities)
-    derivative_clip: float = 1e5  # hard bound on ODE derivatives
-    std_patient: bool = False  # use standard patient parameters
-    init_insulin_carbo_ratio: float = 19.3  # [g/U], realistic default range ~8-15
-    init_insulin_sensitivity_factor: float = 3.1  # [mmol/L/U], realistic default range ~2-4
-
-
-def _clip_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
-    """Vectorized clipping of non-negative physiological state variables across all timepoints."""
-    clipped = state_trajectory.copy()
-    non_negative_indices = np.array([0, 1, 2, 3, 4, 8, 9], dtype=np.int64)
-    clipped[non_negative_indices, :] = np.maximum(clipped[non_negative_indices, :], 0.0)
-    return clipped
-
-
-def _generate_autocorrelated_noise(
-    n_samples: int, 
-    noise_std: float, 
-    autocorr: float,
-    rng: np.random.Generator
-) -> np.ndarray:
-    """
-    Generate AR(1) autocorrelated noise for realistic CGM error.
-    
-    Real CGM noise is temporally correlated unlike independent draws.
-    Uses AR(1) process: ε[t] = ρ*ε[t-1] + √(1-ρ²)*η[t]
-    where η[t] ~ N(0, σ²)
-    
-    Parameters:
-    -----------
-    n_samples: number of time points
-    noise_std: standard deviation in mmol/L
-    autocorr: autocorrelation coefficient (0-1), typically 0.7-0.9
-    rng: random number generator
-    
-    Returns:
-    --------
-    noise array of shape (n_samples,)
-    """
-    noise: np.ndarray = np.zeros(n_samples, dtype=np.float64)
-    innovation_std = noise_std * np.sqrt(1 - autocorr**2)
-    
-    for t in range(n_samples):
-        if t == 0:
-            noise[t] = float(rng.normal(0, noise_std))
-        else:
-            innovation: float = cast(float, rng.normal(0, innovation_std))
-            noise[t] = autocorr * noise[t-1] + innovation
-    
-    return noise
-
-
-def _get_patient_color(patient_idx: int, n_patients: int) -> tuple[float, float, float, float]:
-    """
-    Generate aesthetically pleasing color for patient trajectory.
-    
-    Uses colormap to cycle through blue/cyan shades for small cohorts,
-    or full spectrum for large cohorts.
-    """
-    if n_patients <= 10:
-        # Use blue/cyan shades for small cohorts
-        cmap = plt.get_cmap('Blues')  # type: ignore[misc]
-        color_val = 0.4 + 0.5 * (patient_idx / max(1, n_patients - 1))
-        return (*cmap(color_val)[:3], 0.15)  # RGB + alpha
-    elif n_patients <= 50:
-        # Use cool colors (blue to green)
-        cmap = plt.get_cmap('cool')  # type: ignore[misc]
-        color_val = patient_idx / max(1, n_patients - 1)
-        return (*cmap(color_val)[:3], 0.12)
-    else:
-        # Use full spectrum for large cohorts
-        cmap = plt.get_cmap('viridis')  # type: ignore[misc]
-        color_val = patient_idx / max(1, n_patients - 1)
-        return (*cmap(color_val)[:3], 0.08)
-
-
-def _measure_glycemia_day(
-    state_trajectory: np.ndarray,
-    patient_params: ParameterSet,
-    noise_sequence: np.ndarray,
-    n_measurements: int,
-) -> np.ndarray:
-    """Compute glycemia trajectory from state trajectory with additive sensor noise."""
-    available_measurements = state_trajectory.shape[1]
-    effective_measurements = min(n_measurements, available_measurements)
-
-    glycemia_day: list[float] = []
-    for t_idx in range(effective_measurements):
-        state_at_t: tuple[float, ...] = tuple(np.asarray(state_trajectory[:, t_idx], dtype=np.float64).tolist())
-        g_base = measure_glycemia(
-            state_at_t,
-            patient_params,
-            noise_std=0.0,
-            output_unit='mmol/L'
-        )
-        glycemia_day.append(float(g_base) + float(noise_sequence[t_idx]))
-
-    if effective_measurements < n_measurements:
-        fallback_value = glycemia_day[-1] if glycemia_day else 0.0
-        glycemia_day.extend([fallback_value] * (n_measurements - effective_measurements))
-
-    return np.array(glycemia_day, dtype=np.float64)
+from src.simulation_config import SimulationConfig
+from src.simulation_control import (
+    ControllerState,
+    apply_guard_iob_isf,
+    apply_hypo_rescue_to_derivative,
+    count_correction_active_points,
+    estimate_iob_from_state,
+)
+from src.simulation_utils import (
+    clip_state_trajectory,
+    create_export_directory,
+    generate_autocorrelated_noise,
+    get_patient_color,
+    measure_glycemia_day,
+)
 
 
 # --- Main Simulation Loop ---
@@ -164,28 +52,7 @@ def run_simulation(
     clear_meal_cache()
     
     # Setup export directory
-    now_sim_folder_path: Path | None = None
-    if any(export_config.to_list()):
-        folder_path: Path | None = Path("monte_carlo_results")
-        try:
-            folder_path.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"Warning: Failed to create export {folder_path} directory: {e}")
-            folder_path = None
-        if folder_path is not None:
-            today_folder_path: Path | None = folder_path / datetime.now().strftime("%Y%m%d")
-            try:
-                today_folder_path.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                print(f"Warning: Failed to create export {today_folder_path} directory: {e}")
-                today_folder_path = None
-            if today_folder_path is not None:
-                now_sim_folder_path = today_folder_path / datetime.now().strftime("%H%M%S")
-                try:
-                    now_sim_folder_path.mkdir(parents=True, exist_ok=True)
-                except OSError as e:
-                    print(f"Warning: Failed to create export {now_sim_folder_path} directory: {e}")
-                    now_sim_folder_path = None
+    now_sim_folder_path = create_export_directory() if any(export_config.to_list()) else None
 
     # Generate an oversized candidate pool; keep first N stable patients
     candidate_multiplier = 5
@@ -206,9 +73,20 @@ def run_simulation(
     rejected_patients = 0
     rejected_initial_glucose = 0
     rejected_instability = 0
-    rejection_bounds_mmol = (5.0, 6.5)
-    instability_max_glucose_mmol = 20.0
+    rejected_quality_hypo = 0
+    rejected_quality_hyper = 0
+    accepted_total_points = 0
+    accepted_guard_active_points = 0
+    accepted_rescue_active_points = 0
+    accepted_iob_guard_active_points = 0
+    accepted_correction_isf_active_points = 0
+    accepted_correction_isf_events = 0
+    accepted_correction_isf_units = 0.0
+    rejection_bounds_mmol = (4.5, 7.2)
+    instability_max_glucose_mmol = 17.0
     instability_hyper_pct = 30.0
+    quality_max_hypo_pct = 4.0
+    quality_max_hyper_pct = 15.0
 
     print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")
     print(f"CGM noise: σ={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")
@@ -268,7 +146,17 @@ def run_simulation(
 
             # Track state across days
             current_state: np.ndarray = np.array(x0_initial, dtype=np.float64)
-            patient_full_trajectory: list[np.ndarray] = []
+            patient_full_trajectory_noisy: list[np.ndarray] = []
+            patient_full_trajectory_physio: list[np.ndarray] = []
+            patient_total_points = 0
+            patient_guard_active_points = 0
+            patient_rescue_active_points = 0
+            patient_iob_guard_active_points = 0
+            patient_correction_isf_active_points = 0
+            patient_correction_isf_events = 0
+            patient_correction_isf_units = 0.0
+            previous_noise_value: float | None = None
+            controller_state = ControllerState()
         
             # Simulate each day
             for day_idx in range(config.n_days):
@@ -288,14 +176,25 @@ def run_simulation(
                 def ode_func(t: float, x: np.ndarray) -> np.ndarray:
                     x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
                     x_safe = np.clip(x_safe, -1e6, 1e6)
-                    basal_hourly_effective = basal_hourly_patient
-                    insulin_carbo_ratio_effective = insulin_carbo_ratio_patient
+                    current_min = int(np.floor(t))
+                    # Use absolute simulation minute to keep latch timers consistent across days.
+                    current_abs_min = day_idx * minutes_per_day + current_min
                     g_est = measure_glycemia(tuple(x_safe.tolist()), patient_params, noise_std=0.0, output_unit='mmol/L')
-                    if config.enable_hypo_guard:
-                        if g_est <= config.hypo_guard_mmol:
-                            basal_hourly_effective = 0.0
-                            if config.suppress_meal_bolus_on_guard:
-                                insulin_carbo_ratio_effective = 1e6
+
+                    # Basic insulin-on-board (IOB) estimate from subcutaneous depots [U].
+                    # S1 and S2 are insulin masses in mU, so divide by 1000 to get units.
+                    iob_u = max(0.0, float(x_safe[2]) + float(x_safe[3])) / 1000.0
+                    basal_hourly_effective, insulin_carbo_ratio_effective, _guard_latched = apply_guard_iob_isf(
+                        current_abs_min=current_abs_min,
+                        g_est=g_est,
+                        iob_u=iob_u,
+                        basal_hourly_patient=basal_hourly_patient,
+                        insulin_carbo_ratio_patient=insulin_carbo_ratio_patient,
+                        insulin_sensitivity_patient=insulin_sensitivity_patient,
+                        config=config,
+                        state=controller_state,
+                    )
+
                     result = hovorka_equations(
                         int(t),
                         x_safe.tolist(),
@@ -310,12 +209,15 @@ def run_simulation(
                         seed=config.random_seed,
                     )
                     dy = np.asarray(result, dtype=np.float64)
-                    if config.enable_hypo_rescue and g_est < config.hypo_rescue_trigger_mmol:
-                        vg = float(patient_params["VG"])
-                        bw = float(patient_params["BW"])
-                        deficit = config.hypo_rescue_trigger_mmol - g_est
-                        rescue_q1 = config.hypo_rescue_gain_per_min * deficit * vg * bw
-                        dy[0] += rescue_q1
+                    apply_hypo_rescue_to_derivative(
+                        dy=dy,
+                        current_abs_min=current_abs_min,
+                        g_est=g_est,
+                        patient_params=patient_params,
+                        config=config,
+                        state=controller_state,
+                    )
+
                     dy = np.nan_to_num(dy, nan=0.0, posinf=config.derivative_clip, neginf=-config.derivative_clip)
                     dy = np.clip(dy, -config.derivative_clip, config.derivative_clip)
                     return dy
@@ -353,56 +255,110 @@ def run_simulation(
             
                 # Clip states if requested (guard against negative masses)
                 if config.clip_states:
-                    state_trajectory = _clip_state_trajectory(state_trajectory)
+                    state_trajectory = clip_state_trajectory(state_trajectory)
             
                 # Update current state for next day (continuity)
                 current_state = np.asarray(state_trajectory[:, -1], dtype=np.float64)
             
                 # Generate autocorrelated CGM noise for this day
                 n_measurements = len(t_eval_day)
-                noise_sequence = _generate_autocorrelated_noise(
+                noise_sequence = generate_autocorrelated_noise(
                     n_measurements,
                     config.noise_std,
                     config.noise_autocorr,
-                    rng
+                    rng,
+                    initial_value=previous_noise_value,
                 )
+                previous_noise_value = float(noise_sequence[-1]) if noise_sequence.size > 0 else previous_noise_value
 
-                glycemia_day_array = _measure_glycemia_day(
+                glycemia_day_array = measure_glycemia_day(
                     state_trajectory=state_trajectory,
                     patient_params=patient_params,
                     noise_sequence=noise_sequence,
                     n_measurements=n_measurements,
                 )
+                glycemia_day_physio = measure_glycemia_day(
+                    state_trajectory=state_trajectory,
+                    patient_params=patient_params,
+                    noise_sequence=np.zeros(n_measurements, dtype=np.float64),
+                    n_measurements=n_measurements,
+                )
+                glycemia_day_physio_mmol = glycemia_day_physio.copy()
             
                 # Convert units if needed
                 if not config.international_unit:
                     glycemia_day_array = glycemia_day_array * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
+                    glycemia_day_physio = glycemia_day_physio * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
             
                 # Store results for this day
                 results_tot[sim_patient_id]["days"][day_idx] = glycemia_day_array
-                patient_full_trajectory.append(glycemia_day_array)
+                # Day 0 is kept in full (0..1440 = 1441 points).
+                # Subsequent days drop their first point (minute 0 = same physical
+                # timestamp as minute 1440 of the previous day) to avoid a duplicate
+                # in the concatenated trajectory that would create a visible "kink".
+                noisy_segment = glycemia_day_array if day_idx == 0 else glycemia_day_array[1:]
+                physio_segment = glycemia_day_physio if day_idx == 0 else glycemia_day_physio[1:]
+                physio_segment_mmol = glycemia_day_physio_mmol if day_idx == 0 else glycemia_day_physio_mmol[1:]
+                iob_day_u = estimate_iob_from_state(state_trajectory)
+                iob_segment_u = iob_day_u if day_idx == 0 else iob_day_u[1:]
+                patient_full_trajectory_noisy.append(noisy_segment)
+                patient_full_trajectory_physio.append(physio_segment)
+                patient_total_points += int(physio_segment_mmol.size)
+                patient_guard_active_points += int(np.sum(physio_segment_mmol <= config.hypo_guard_mmol))
+                patient_rescue_active_points += int(np.sum(physio_segment_mmol < config.hypo_rescue_trigger_mmol))
+                if config.enable_iob_bolus_guard:
+                    patient_iob_guard_active_points += int(np.sum(iob_segment_u > config.iob_guard_units))
+
+            # Absolute-minute end of this simulated horizon, used to clip correction windows.
+            horizon_end_abs_min = config.n_days * minutes_per_day
+            patient_correction_isf_active_points += count_correction_active_points(
+                windows_abs=controller_state.correction_isf_windows_abs,
+                horizon_end_abs_min=horizon_end_abs_min,
+            )
+            patient_correction_isf_events = controller_state.correction_isf_events
+            patient_correction_isf_units = controller_state.correction_isf_units
         
             # Concatenate all days for this patient
-            patient_full_trajectory_concat = np.concatenate(patient_full_trajectory, dtype=np.float64)  # type: ignore[arg-type]
+            patient_full_trajectory_noisy_concat = np.concatenate(patient_full_trajectory_noisy, dtype=np.float64)  # type: ignore[arg-type]
+            patient_full_trajectory_physio_concat = np.concatenate(patient_full_trajectory_physio, dtype=np.float64)  # type: ignore[arg-type]
 
-            hyper_count = int(np.sum(patient_full_trajectory_concat > 10.0))
-            total_count = int(patient_full_trajectory_concat.size)
+            hypo_count = int(np.sum(patient_full_trajectory_physio_concat < 3.9))
+            hyper_count = int(np.sum(patient_full_trajectory_physio_concat > 10.0))
+            total_count = int(patient_full_trajectory_physio_concat.size)
+            hypo_pct = (100.0 * hypo_count / total_count) if total_count > 0 else 0.0
             hyper_pct = (100.0 * hyper_count / total_count) if total_count > 0 else 0.0
-            max_glucose = float(np.max(patient_full_trajectory_concat)) if total_count > 0 else 0.0
+            max_glucose = float(np.max(patient_full_trajectory_physio_concat)) if total_count > 0 else 0.0
             if hyper_pct > instability_hyper_pct or max_glucose > instability_max_glucose_mmol:
                 rejected_patients += 1
                 rejected_instability += 1
                 del results_tot[sim_patient_id]
                 continue
+            if hypo_pct > quality_max_hypo_pct:
+                rejected_patients += 1
+                rejected_quality_hypo += 1
+                del results_tot[sim_patient_id]
+                continue
+            if hyper_pct > quality_max_hyper_pct:
+                rejected_patients += 1
+                rejected_quality_hyper += 1
+                del results_tot[sim_patient_id]
+                continue
 
             accepted_patients += 1
-            all_patient_trajectories.append(patient_full_trajectory_concat)
+            all_patient_trajectories.append(patient_full_trajectory_physio_concat)
+            accepted_total_points += patient_total_points
+            accepted_guard_active_points += patient_guard_active_points
+            accepted_rescue_active_points += patient_rescue_active_points
+            accepted_iob_guard_active_points += patient_iob_guard_active_points
+            accepted_correction_isf_active_points += patient_correction_isf_active_points
+            accepted_correction_isf_events += patient_correction_isf_events
+            accepted_correction_isf_units += patient_correction_isf_units
             pbar.update(1)
         
             # Plot patient trajectory with aesthetically pleasing colors
-            time_hours = np.arange(len(patient_full_trajectory_concat)) / 60.0
-            patient_color = _get_patient_color(sim_patient_id, max(1, config.n_patients))
-            plt.plot(time_hours, patient_full_trajectory_concat, color=patient_color[:3], alpha=patient_color[3])  # type: ignore[misc]
+            time_hours = np.arange(len(patient_full_trajectory_noisy_concat)) / 60.0
+            patient_color = get_patient_color(sim_patient_id, max(1, config.n_patients))
+            plt.plot(time_hours, patient_full_trajectory_noisy_concat, color=patient_color[:3], alpha=patient_color[3])  # type: ignore[misc]
 
     if accepted_patients < config.n_patients:
         print(
@@ -418,7 +374,25 @@ def run_simulation(
     )
     print(
         "Rejection reasons: "
-        f"initial_glucose={rejected_initial_glucose}, instability={rejected_instability}"
+        f"initial_glucose={rejected_initial_glucose}, instability={rejected_instability}, "
+        f"quality_hypo={rejected_quality_hypo}, quality_hyper={rejected_quality_hyper}"
+    )
+    guard_active_pct = (100.0 * accepted_guard_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
+    rescue_active_pct = (100.0 * accepted_rescue_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
+    iob_guard_active_pct = (100.0 * accepted_iob_guard_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
+    correction_isf_active_pct = (100.0 * accepted_correction_isf_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
+    print(
+        "Safety controls activity (accepted cohort): "
+        f"guard_active={guard_active_pct:.2f}%, rescue_active={rescue_active_pct:.2f}%, "
+        f"iob_guard_active={iob_guard_active_pct:.2f}%, correction_isf_active={correction_isf_active_pct:.2f}%"
+    )
+    avg_correction_isf_events_per_patient = (accepted_correction_isf_events / accepted_patients) if accepted_patients > 0 else 0.0
+    avg_correction_isf_units_per_patient = (accepted_correction_isf_units / accepted_patients) if accepted_patients > 0 else 0.0
+    print(
+        "ISF correction summary (accepted cohort): "
+        f"events={accepted_correction_isf_events}, total_units={accepted_correction_isf_units:.2f} U, "
+        f"avg_events_per_patient={avg_correction_isf_events_per_patient:.2f}, "
+        f"avg_units_per_patient={avg_correction_isf_units_per_patient:.2f} U"
     )
 
     # Export results if requested
@@ -437,13 +411,28 @@ def run_simulation(
                 "use_calibrated_basal": config.use_calibrated_basal,
                 "init_insulin_carbo_ratio_g_U": config.init_insulin_carbo_ratio,
                 "init_insulin_sensitivity_factor_mmol_U": config.init_insulin_sensitivity_factor,
+                "enable_iob_bolus_guard": config.enable_iob_bolus_guard,
+                "iob_guard_units": config.iob_guard_units,
+                "iob_full_attenuation_units": config.iob_full_attenuation_units,
+                "iob_max_icr_multiplier": config.iob_max_icr_multiplier,
+                "enable_correction_isf": config.enable_correction_isf,
+                "correction_isf_target_mmol": config.correction_isf_target_mmol,
+                "correction_isf_cooldown_min": config.correction_isf_cooldown_min,
+                "correction_isf_max_bolus_units": config.correction_isf_max_bolus_units,
+                "correction_isf_min_bolus_units": config.correction_isf_min_bolus_units,
+                "correction_isf_bolus_duration_min": config.correction_isf_bolus_duration_min,
+                "correction_isf_iob_free_units": config.correction_isf_iob_free_units,
                 "initial_target_glucose_mgdl": config.initial_target_glucose_mgdl,
                 "enable_hypo_guard": config.enable_hypo_guard,
                 "hypo_guard_mmol_L": config.hypo_guard_mmol,
+                "hypo_guard_retrigger_cooldown_min": config.hypo_guard_retrigger_cooldown_min,
                 "suppress_meal_bolus_on_guard": config.suppress_meal_bolus_on_guard,
                 "enable_hypo_rescue": config.enable_hypo_rescue,
                 "hypo_rescue_trigger_mmol_L": config.hypo_rescue_trigger_mmol,
-                "hypo_rescue_gain_per_min": config.hypo_rescue_gain_per_min,
+                "hypo_guard_suspend_min": config.hypo_guard_suspend_min,
+                "hypo_rescue_carbs_g": config.hypo_rescue_carbs_g,
+                "hypo_rescue_duration_min": config.hypo_rescue_duration_min,
+                "hypo_rescue_retrigger_cooldown_min": config.hypo_rescue_retrigger_cooldown_min,
                 "solver_method": config.solver_method,
                 "solver_max_step": config.solver_max_step,
                 "effective_insulin_carbo_ratio_min_g_U": 10.0,
@@ -455,11 +444,26 @@ def run_simulation(
                 "rejected_patients": rejected_patients,
                 "rejected_initial_glucose": rejected_initial_glucose,
                 "rejected_instability": rejected_instability,
+                "rejected_quality_hypo": rejected_quality_hypo,
+                "rejected_quality_hyper": rejected_quality_hyper,
                 "rejection_rate_percent": round(rejection_rate_pct, 2),
+                "guard_active_percent_accepted": round(guard_active_pct, 3),
+                "rescue_active_percent_accepted": round(rescue_active_pct, 3),
+                "iob_guard_active_percent_accepted": round(iob_guard_active_pct, 3),
+                "correction_isf_active_percent_accepted": round(correction_isf_active_pct, 3),
+                "guard_active_points_accepted": accepted_guard_active_points,
+                "rescue_active_points_accepted": accepted_rescue_active_points,
+                "iob_guard_active_points_accepted": accepted_iob_guard_active_points,
+                "correction_isf_active_points_accepted": accepted_correction_isf_active_points,
+                "correction_isf_events_accepted": accepted_correction_isf_events,
+                "correction_isf_total_units_accepted": round(accepted_correction_isf_units, 4),
+                "total_points_accepted": accepted_total_points,
                 "initial_glucose_acceptance_min_mmol_L": rejection_bounds_mmol[0],
                 "initial_glucose_acceptance_max_mmol_L": rejection_bounds_mmol[1],
                 "instability_max_glucose_mmol_L": instability_max_glucose_mmol,
                 "instability_hyper_pct_threshold": instability_hyper_pct,
+                "quality_max_hypo_pct_threshold": quality_max_hypo_pct,
+                "quality_max_hyper_pct_threshold": quality_max_hyper_pct,
             }
             
             export_to_formats(

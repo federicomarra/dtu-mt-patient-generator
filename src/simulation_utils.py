@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import cast
+
+import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+import numpy as np  # type: ignore[import-untyped]
+
+from src.model import ParameterSet
+from src.sensor import measure_glycemia
+
+
+def clip_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
+    """Clip state variables that must remain non-negative."""
+    clipped = state_trajectory.copy()
+    non_negative_indices = np.array([0, 1, 2, 3, 4, 8, 9], dtype=np.int64)
+    clipped[non_negative_indices, :] = np.maximum(clipped[non_negative_indices, :], 0.0)
+    return clipped
+
+
+def generate_autocorrelated_noise(
+    n_samples: int,
+    noise_std: float,
+    autocorr: float,
+    rng: np.random.Generator,
+    initial_value: float | None = None,
+) -> np.ndarray:
+    """Generate AR(1) sensor noise, optionally continuous across day boundaries."""
+    noise = np.zeros(n_samples, dtype=np.float64)
+    innovation_std = noise_std * np.sqrt(1 - autocorr**2)
+
+    for idx in range(n_samples):
+        if idx == 0:
+            if initial_value is None:
+                noise[idx] = float(rng.normal(0, noise_std))
+            else:
+                innovation = cast(float, rng.normal(0, innovation_std))
+                noise[idx] = autocorr * initial_value + innovation
+        else:
+            innovation = cast(float, rng.normal(0, innovation_std))
+            noise[idx] = autocorr * noise[idx - 1] + innovation
+
+    return noise
+
+
+def get_patient_color(patient_idx: int, n_patients: int) -> tuple[float, float, float, float]:
+    """Return RGBA tuple used to plot one patient trajectory."""
+    if n_patients <= 10:
+        cmap = plt.get_cmap("Blues")  # type: ignore[misc]
+        color_val = 0.4 + 0.5 * (patient_idx / max(1, n_patients - 1))
+        return (*cmap(color_val)[:3], 0.15)
+    if n_patients <= 50:
+        cmap = plt.get_cmap("cool")  # type: ignore[misc]
+        color_val = patient_idx / max(1, n_patients - 1)
+        return (*cmap(color_val)[:3], 0.12)
+
+    cmap = plt.get_cmap("viridis")  # type: ignore[misc]
+    color_val = patient_idx / max(1, n_patients - 1)
+    return (*cmap(color_val)[:3], 0.08)
+
+
+def measure_glycemia_day(
+    state_trajectory: np.ndarray,
+    patient_params: ParameterSet,
+    noise_sequence: np.ndarray,
+    n_measurements: int,
+) -> np.ndarray:
+    """Measure glycemia for one day given states and additive noise sequence."""
+    available = state_trajectory.shape[1]
+    effective = min(n_measurements, available)
+
+    glycemia_day: list[float] = []
+    for idx in range(effective):
+        state_at_t = tuple(np.asarray(state_trajectory[:, idx], dtype=np.float64).tolist())
+        g_base = measure_glycemia(state_at_t, patient_params, noise_std=0.0, output_unit="mmol/L")
+        glycemia_day.append(float(g_base) + float(noise_sequence[idx]))
+
+    if effective < n_measurements:
+        fallback_value = glycemia_day[-1] if glycemia_day else 0.0
+        glycemia_day.extend([fallback_value] * (n_measurements - effective))
+
+    return np.array(glycemia_day, dtype=np.float64)
+
+
+def create_export_directory(base_folder: str = "monte_carlo_results") -> Path | None:
+    """Create timestamped export directory, returning None on failure."""
+    folder_path: Path | None = Path(base_folder)
+    try:
+        folder_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Warning: Failed to create export {folder_path} directory: {exc}")
+        return None
+
+    today_folder_path = folder_path / datetime.now().strftime("%Y%m%d")
+    try:
+        today_folder_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Warning: Failed to create export {today_folder_path} directory: {exc}")
+        return None
+
+    now_sim_folder_path = today_folder_path / datetime.now().strftime("%H%M%S")
+    try:
+        now_sim_folder_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Warning: Failed to create export {now_sim_folder_path} directory: {exc}")
+        return None
+
+    return now_sim_folder_path

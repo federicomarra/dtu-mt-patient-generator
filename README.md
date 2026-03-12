@@ -114,6 +114,10 @@ Configured through `SimulationConfig` in `src/simulation_config.py`.
 - `basal_hourly`, `use_calibrated_basal`
 - `init_insulin_carbo_ratio`, `init_insulin_sensitivity_factor`
 
+Note: the current SI/ICR calibration in `src/parameters.py` was tuned to better match adult T1D
+population behavior reported in Dalla Man et al. (2007), while preserving Hovorka-model structure
+and Boiroux thesis ranges.
+
 ### Hypoglycemia safety
 
 - `enable_hypo_guard`
@@ -182,6 +186,7 @@ Metadata includes:
 
 - Hovorka, R. et al. (2004). Nonlinear model predictive control of glucose concentration in subjects with type 1 diabetes.
 - Boiroux, D. (2012). Model Predictive Control for Type 1 Diabetes, PhD thesis, DTU.
+- Dalla Man, C., Rizza, R. A., and Cobelli, C. (2007). Meal simulation model of the glucose-insulin system. IEEE Transactions on Biomedical Engineering, 54(10), 1740-1749.
 - Wilinska, M. E. et al. (2010). Simulation environment to evaluate closed-loop insulin delivery systems in type 1 diabetes.
 
 ## License

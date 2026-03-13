@@ -84,7 +84,11 @@ class InputPlotAxes(Protocol):
 def run_simulation(
     config: SimulationConfig,
     export_config: ExportConfig,
-) -> None:
+    *,
+    return_results: bool = False,
+    show_progress: bool = True,
+    show_summary: bool = True,
+) -> dict[int, PatientResult] | None:
     """
     Run Monte Carlo simulation of Hovorka model across multiple patients and days.
     
@@ -137,12 +141,19 @@ def run_simulation(
     quality_max_hypo_pct = 4.0
     quality_max_hyper_pct = 12.0
 
-    print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")
-    print(f"CGM noise: σ={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")
+    if show_summary:
+        print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")
+        print(f"CGM noise: σ={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")
     
     # Main simulation loop (progress tracks accepted patients)
     desc_text = "\033[34mAccepted patients\033[0m"
-    with tqdm(total=config.n_patients, desc=desc_text, unit="patient", colour="blue") as pbar:
+    with tqdm(
+        total=config.n_patients,
+        desc=desc_text,
+        unit="patient",
+        colour="blue",
+        disable=not show_progress,
+    ) as pbar:
         for patient_params in patients:
             if accepted_patients >= config.n_patients:
                 break
@@ -433,40 +444,43 @@ def run_simulation(
             if config.enable_plots:
                 plt.plot(time_hours, patient_full_trajectory_noisy_concat, color=patient_color[:3], alpha=patient_color[3])  # type: ignore[misc]
 
-    if accepted_patients < config.n_patients:
+    if show_summary and accepted_patients < config.n_patients:
         print(
             f"Warning: accepted only {accepted_patients}/{config.n_patients} stable patients "
             f"from {sampled_patients} candidates"
         )
 
     rejection_rate_pct = (100.0 * rejected_patients / sampled_patients) if sampled_patients > 0 else 0.0
-    print(
-        "Patient sampling summary: "
-        f"accepted={accepted_patients}, rejected={rejected_patients}, "
-        f"rejection_rate={rejection_rate_pct:.1f}%"
-    )
-    print(
-        "Rejection reasons: "
-        f"initial_glucose={rejected_initial_glucose}, instability={rejected_instability}, "
-        f"quality_hypo={rejected_quality_hypo}, quality_hyper={rejected_quality_hyper}"
-    )
+    if show_summary:
+        print(
+            "Patient sampling summary: "
+            f"accepted={accepted_patients}, rejected={rejected_patients}, "
+            f"rejection_rate={rejection_rate_pct:.1f}%"
+        )
+        print(
+            "Rejection reasons: "
+            f"initial_glucose={rejected_initial_glucose}, instability={rejected_instability}, "
+            f"quality_hypo={rejected_quality_hypo}, quality_hyper={rejected_quality_hyper}"
+        )
     guard_active_pct = (100.0 * accepted_guard_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
     rescue_active_pct = (100.0 * accepted_rescue_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
     iob_guard_active_pct = (100.0 * accepted_iob_guard_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
     correction_isf_active_pct = (100.0 * accepted_correction_isf_active_points / accepted_total_points) if accepted_total_points > 0 else 0.0
-    print(
-        "Safety controls activity (accepted cohort): "
-        f"guard_active={guard_active_pct:.2f}%, rescue_active={rescue_active_pct:.2f}%, "
-        f"iob_guard_active={iob_guard_active_pct:.2f}%, correction_isf_active={correction_isf_active_pct:.2f}%"
-    )
+    if show_summary:
+        print(
+            "Safety controls activity (accepted cohort): "
+            f"guard_active={guard_active_pct:.2f}%, rescue_active={rescue_active_pct:.2f}%, "
+            f"iob_guard_active={iob_guard_active_pct:.2f}%, correction_isf_active={correction_isf_active_pct:.2f}%"
+        )
     avg_correction_isf_events_per_patient = (accepted_correction_isf_events / accepted_patients) if accepted_patients > 0 else 0.0
     avg_correction_isf_units_per_patient = (accepted_correction_isf_units / accepted_patients) if accepted_patients > 0 else 0.0
-    print(
-        "ISF correction summary (accepted cohort): "
-        f"events={accepted_correction_isf_events}, total_units={accepted_correction_isf_units:.2f} U, "
-        f"avg_events_per_patient={avg_correction_isf_events_per_patient:.2f}, "
-        f"avg_units_per_patient={avg_correction_isf_units_per_patient:.2f} U"
-    )
+    if show_summary:
+        print(
+            "ISF correction summary (accepted cohort): "
+            f"events={accepted_correction_isf_events}, total_units={accepted_correction_isf_units:.2f} U, "
+            f"avg_events_per_patient={avg_correction_isf_events_per_patient:.2f}, "
+            f"avg_units_per_patient={avg_correction_isf_units_per_patient:.2f} U"
+        )
 
     # Export results if requested
     if now_sim_folder_path and any(export_config.to_list()):
@@ -609,13 +623,14 @@ def run_simulation(
         if now_sim_folder_path and any(export_config.to_list()):
             try:
                 plt.savefig(now_sim_folder_path / "simulation_plot.png", dpi=150, bbox_inches='tight')  # type: ignore[misc]
-                print(f"\nResults saved to: {now_sim_folder_path}")
+                if show_summary:
+                    print(f"\nResults saved to: {now_sim_folder_path}")
             except Exception as e:
                 print(f"Warning: Failed to save plot: {e}")
         
         # Show plot if interactive backend is available
         backend_name = plt.get_backend().lower()  # type: ignore[misc]
-        if "agg" in backend_name:
+        if "agg" in backend_name and show_summary:
             print("Plot saved to file.")
         else:
             plt.show()  # type: ignore[misc]
@@ -730,3 +745,7 @@ def run_simulation(
         backend_name_inputs = plt.get_backend().lower()  # type: ignore[misc]
         if "agg" not in backend_name_inputs:
             plt.show()  # type: ignore[misc]
+
+    if return_results:
+        return results_tot
+    return None

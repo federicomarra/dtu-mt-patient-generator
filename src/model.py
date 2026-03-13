@@ -9,6 +9,7 @@ from src.sensor import measure_glycemia
 # Type aliases
 ParameterSet = dict[str, float]
 StateVector = list[float]
+StateArray = np.ndarray
 InputFunc = Callable[..., tuple[float, float]]
 
 # Helper functions
@@ -31,7 +32,7 @@ def state_unlistify(x: StateVector) -> tuple[float, float, float, float, float, 
 # Model equations
 def hovorka_equations(
     t: int,
-    x: StateVector,
+    x: StateVector | StateArray,
     params: ParameterSet,
     input_func: InputFunc,
     scenario: int,
@@ -41,6 +42,7 @@ def hovorka_equations(
     insulin_carbo_ratio: float = 2.0,
     meal_schedule: dict[str, float] | None = None,
     seed: int | None = None,
+    precomputed_inputs: tuple[float, float] | None = None,
 ) -> StateVector:
     """
     Standard Hovorka Model ODEs with named intermediate variables for clarity.
@@ -73,7 +75,9 @@ def hovorka_equations(
     Ag = float(params["Ag"])
     BW = float(params["BW"])
 
-    if meal_schedule is None:
+    if precomputed_inputs is not None:
+        u_t, d_t = precomputed_inputs
+    elif meal_schedule is None:
         u_t, d_t = input_func(
             t,
             patient_id=patient_id,

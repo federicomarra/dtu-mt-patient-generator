@@ -8,9 +8,6 @@ import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 import numpy as np  # type: ignore[import-untyped]
 
 from src.model import ParameterSet
-from src.sensor import measure_glycemia
-
-
 def clip_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
     """Clip state variables that must remain non-negative."""
     clipped = state_trajectory.copy()
@@ -69,18 +66,20 @@ def measure_glycemia_day(
     """Measure glycemia for one day given states and additive noise sequence."""
     available = state_trajectory.shape[1]
     effective = min(n_measurements, available)
+    if effective == 0:
+        return np.zeros(n_measurements, dtype=np.float64)
 
-    glycemia_day: list[float] = []
-    for idx in range(effective):
-        state_at_t = tuple(np.asarray(state_trajectory[:, idx], dtype=np.float64).tolist())
-        g_base = measure_glycemia(state_at_t, patient_params, noise_std=0.0, output_unit="mmol/L")
-        glycemia_day.append(float(g_base) + float(noise_sequence[idx]))
+    vg = float(patient_params["VG"])
+    bw = float(patient_params["BW"])
+    denom = vg * bw
+    q1 = np.asarray(state_trajectory[0, :effective], dtype=np.float64)
+    glycemia_day = np.zeros(n_measurements, dtype=np.float64)
+    glycemia_day[:effective] = (q1 / denom) + np.asarray(noise_sequence[:effective], dtype=np.float64)
 
     if effective < n_measurements:
-        fallback_value = glycemia_day[-1] if glycemia_day else 0.0
-        glycemia_day.extend([fallback_value] * (n_measurements - effective))
+        glycemia_day[effective:] = glycemia_day[effective - 1]
 
-    return np.array(glycemia_day, dtype=np.float64)
+    return glycemia_day
 
 
 def create_export_directory(base_folder: str = "monte_carlo_results") -> Path | None:

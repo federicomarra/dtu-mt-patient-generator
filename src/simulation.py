@@ -13,7 +13,6 @@ from tqdm import tqdm
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
 from src.parameters import generate_monte_carlo_patients
 from src.input import scenario_with_cached_meals, N_SCENARIOS, clear_meal_cache
-from src.sensor import measure_glycemia
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
 from src.simulation_config import SimulationConfig
@@ -112,7 +111,8 @@ def run_simulation(
     minutes_per_day = int(24 * 60)  # 1440 minutes
     
     # Plotting setup
-    plt.figure(figsize=(14, 7))  # type: ignore[misc]
+    if config.enable_plots:
+        plt.figure(figsize=(14, 7))  # type: ignore[misc]
     
     # Storage for results
     results_tot: dict[int, PatientResult] = {}
@@ -158,14 +158,8 @@ def run_simulation(
                 print_progress=False
             )
 
-            initial_glucose_mmol = float(
-                measure_glycemia(
-                    tuple(float(v) for v in x0_initial),
-                    patient_params,
-                    noise_std=0.0,
-                    output_unit='mmol/L',
-                )
-            )
+            vg_bw = float(patient_params["VG"]) * float(patient_params["BW"])
+            initial_glucose_mmol = float(x0_initial[0]) / vg_bw if vg_bw > 0.0 else 0.0
             if not (rejection_bounds_mmol[0] <= initial_glucose_mmol <= rejection_bounds_mmol[1]):
                 rejected_patients += 1
                 rejected_initial_glucose += 1
@@ -226,12 +220,12 @@ def run_simulation(
                 # Define ODE function with patient-specific parameters
                 # NOTE: Using scenario_with_cached_meals for deterministic meal scheduling
                 def ode_func(t: float, x: np.ndarray) -> np.ndarray:
-                    x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
-                    x_safe = np.clip(x_safe, -1e6, 1e6)
+                    x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0, posinf=1e6, neginf=-1e6)
+                    np.clip(x_safe, -1e6, 1e6, out=x_safe)
                     current_min = int(np.floor(t))
                     # Use absolute simulation minute to keep latch timers consistent across days.
                     current_abs_min: int = int(day_idx) * minutes_per_day + current_min
-                    g_est = measure_glycemia(tuple(x_safe.tolist()), patient_params, noise_std=0.0, output_unit='mmol/L')
+                    g_est = float(x_safe[0]) / vg_bw if vg_bw > 0.0 else 0.0
 
                     # Basic insulin-on-board (IOB) estimate from subcutaneous depots [U].
                     # S1 and S2 are insulin masses in mU, so divide by 1000 to get units.
@@ -264,7 +258,7 @@ def run_simulation(
 
                     result = hovorka_equations(
                         int(t),
-                        x_safe.tolist(),
+                        x_safe,
                         patient_params,
                         scenario_with_cached_meals,
                         scenario=scenario,
@@ -274,6 +268,7 @@ def run_simulation(
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
                         meal_schedule=None,
                         seed=config.random_seed,
+                        precomputed_inputs=(float(u_applied), float(d_applied)),
                     )
                     dy = np.asarray(result, dtype=np.float64)
                     apply_hypo_rescue_to_derivative(
@@ -285,8 +280,8 @@ def run_simulation(
                         state=controller_state,
                     )
 
-                    dy = np.nan_to_num(dy, nan=0.0, posinf=config.derivative_clip, neginf=-config.derivative_clip)
-                    dy = np.clip(dy, -config.derivative_clip, config.derivative_clip)
+                    dy = np.nan_to_num(dy, copy=False, nan=0.0, posinf=config.derivative_clip, neginf=-config.derivative_clip)
+                    np.clip(dy, -config.derivative_clip, config.derivative_clip, out=dy)
                     return dy
             
                 # Solve ODE once for entire day with dense output
@@ -435,7 +430,8 @@ def run_simulation(
             # Plot patient trajectory with aesthetically pleasing colors
             time_hours = np.arange(len(patient_full_trajectory_noisy_concat)) / 60.0
             patient_color = get_patient_color(sim_patient_id, max(1, config.n_patients))
-            plt.plot(time_hours, patient_full_trajectory_noisy_concat, color=patient_color[:3], alpha=patient_color[3])  # type: ignore[misc]
+            if config.enable_plots:
+                plt.plot(time_hours, patient_full_trajectory_noisy_concat, color=patient_color[:3], alpha=patient_color[3])  # type: ignore[misc]
 
     if accepted_patients < config.n_patients:
         print(
@@ -555,7 +551,7 @@ def run_simulation(
             print(f"Warning: Export failed: {e}")
 
     # Plot mean trajectory across all patients and days
-    if all_patient_trajectories:
+    if config.enable_plots and all_patient_trajectories:
         mean_trajectory: np.ndarray = np.mean(all_patient_trajectories, axis=0)  # type: ignore[assignment]
         time_hours = np.arange(len(mean_trajectory)) / 60.0
         plt.plot(  # type: ignore[misc]
@@ -568,59 +564,61 @@ def run_simulation(
         )
 
     # Format plot
-    if config.international_unit:
+    if config.enable_plots and config.international_unit:
         plt.axhline(3.9, color='red', linestyle='--', linewidth=1.5, label='Hypoglycemia (3.9 mmol/L)', alpha=0.7)  # type: ignore[misc]
         plt.axhline(10.0, color='orange', linestyle='--', linewidth=1.5, label='Hyperglycemia (10 mmol/L)', alpha=0.7)  # type: ignore[misc]
         plt.ylim(3, 16.5)  # type: ignore[misc]
         plt.ylabel("Blood Glucose (mmol/L)", fontsize=12)  # type: ignore[misc]
-    else:
+    elif config.enable_plots:
         plt.axhline(70, color='red', linestyle='--', linewidth=1.5, label='Hypoglycemia (70 mg/dL)', alpha=0.7)  # type: ignore[misc]
         plt.axhline(180, color='orange', linestyle='--', linewidth=1.5, label='Hyperglycemia (180 mg/dL)', alpha=0.7)  # type: ignore[misc]
         plt.ylim(54, 300)  # type: ignore[misc]
         plt.ylabel("Blood Glucose (mg/dL)", fontsize=12)  # type: ignore[misc]
     
     # Add vertical lines to separate days
-    for day in range(1, config.n_days):
-        plt.axvline(24 * day, color='gray', linestyle=':', alpha=0.3)  # type: ignore[misc]
+    if config.enable_plots:
+        for day in range(1, config.n_days):
+            plt.axvline(24 * day, color='gray', linestyle=':', alpha=0.3)  # type: ignore[misc]
 
-    plt.title(  # type: ignore[misc]
-        f"Hovorka Model Monte Carlo Simulation\n"
-        f"{accepted_patients} accepted / {sampled_patients} sampled patients × {config.n_days} days, "
-        f"CGM noise σ={config.noise_std:.2f} mmol/L",
-        fontsize=13,
-        fontweight='bold'
-    )
-    plt.xlabel("Time (hours)", fontsize=12)  # type: ignore[misc]
-    plt.xlim(0, 24 * config.n_days)  # type: ignore[misc]
-    
-    # Set x-ticks at reasonable intervals
-    hours_total = 24 * config.n_days
-    if hours_total <= 48:
-        tick_interval = 4
-    elif hours_total <= 168:  # 1 week
-        tick_interval = 12
-    else:
-        tick_interval = 24
-    plt.xticks(np.arange(0, hours_total + 1, tick_interval))  # type: ignore[misc]
-    
-    plt.legend(loc='best', framealpha=0.9, fontsize=10)  # type: ignore[misc]
-    plt.grid(True, alpha=0.25, linestyle=':', linewidth=0.5)  # type: ignore[misc]
-    plt.tight_layout()  # type: ignore[misc]
-    
-    # Save plot if export directory exists
-    if now_sim_folder_path and any(export_config.to_list()):
-        try:
-            plt.savefig(now_sim_folder_path / "simulation_plot.png", dpi=150, bbox_inches='tight')  # type: ignore[misc]
-            print(f"\nResults saved to: {now_sim_folder_path}")
-        except Exception as e:
-            print(f"Warning: Failed to save plot: {e}")
-    
-    # Show plot if interactive backend is available
-    backend_name = plt.get_backend().lower()  # type: ignore[misc]
-    if "agg" in backend_name:
-        print("Plot saved to file.")
-    else:
-        plt.show()  # type: ignore[misc]
+    if config.enable_plots:
+        plt.title(  # type: ignore[misc]
+            f"Hovorka Model Monte Carlo Simulation\n"
+            f"{accepted_patients} accepted / {sampled_patients} sampled patients × {config.n_days} days, "
+            f"CGM noise σ={config.noise_std:.2f} mmol/L",
+            fontsize=13,
+            fontweight='bold'
+        )
+        plt.xlabel("Time (hours)", fontsize=12)  # type: ignore[misc]
+        plt.xlim(0, 24 * config.n_days)  # type: ignore[misc]
+        
+        # Set x-ticks at reasonable intervals
+        hours_total = 24 * config.n_days
+        if hours_total <= 48:
+            tick_interval = 4
+        elif hours_total <= 168:  # 1 week
+            tick_interval = 12
+        else:
+            tick_interval = 24
+        plt.xticks(np.arange(0, hours_total + 1, tick_interval))  # type: ignore[misc]
+        
+        plt.legend(loc='best', framealpha=0.9, fontsize=10)  # type: ignore[misc]
+        plt.grid(True, alpha=0.25, linestyle=':', linewidth=0.5)  # type: ignore[misc]
+        plt.tight_layout()  # type: ignore[misc]
+        
+        # Save plot if export directory exists
+        if now_sim_folder_path and any(export_config.to_list()):
+            try:
+                plt.savefig(now_sim_folder_path / "simulation_plot.png", dpi=150, bbox_inches='tight')  # type: ignore[misc]
+                print(f"\nResults saved to: {now_sim_folder_path}")
+            except Exception as e:
+                print(f"Warning: Failed to save plot: {e}")
+        
+        # Show plot if interactive backend is available
+        backend_name = plt.get_backend().lower()  # type: ignore[misc]
+        if "agg" in backend_name:
+            print("Plot saved to file.")
+        else:
+            plt.show()  # type: ignore[misc]
 
     # Secondary plot: insulin delivery and CHO intake (input signals).
     # Use rolling 60-minute delivered totals for interpretable hourly magnitudes.
@@ -648,7 +646,7 @@ def run_simulation(
             insulin_traces_u_min.append(np.concatenate(insulin_segments))
             cho_traces_g_min.append(np.concatenate(cho_segments))
 
-    if insulin_traces_u_min and cho_traces_g_min:
+    if config.enable_plots and insulin_traces_u_min and cho_traces_g_min:
         plt.figure(figsize=(14, 6))  # type: ignore[misc]
         ax_ins_raw: Axes = plt.gca()  # type: ignore[misc,assignment]
         ax_ins = cast(InputPlotAxes, ax_ins_raw)

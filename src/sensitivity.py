@@ -2,7 +2,7 @@ import numpy as np
 from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 
 from src.parameters import get_base_params
-from src.model import ParameterSet, hovorka_equations, compute_optimal_steady_state_from_glucose, measure_glycemia
+from src.model import ParameterSet, hovorka_equations, compute_optimal_steady_state_from_glucose
 from src.simulation_utils import clip_state_trajectory
 
 def simulate_duration(
@@ -47,6 +47,7 @@ def simulate_duration(
     basal_mU_min = basal_hourly * 1000.0 / 60.0
     bolus_rate = bolus_mU / max(1, bolus_duration_min)  # [mU/min]
     cho_rate = cho_mg / max(1, cho_duration_min)  # [mg/min]
+    vg_bw = float(params["VG"]) * float(params["BW"])
 
     def input_func(
         t: int,
@@ -66,18 +67,18 @@ def simulate_duration(
     t_eval = np.arange(0, duration_minutes + 1)
 
     def ode_func(t: float, x: np.ndarray) -> np.ndarray:
-        x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
-        x_safe = np.clip(x_safe, -1e6, 1e6)
+        x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0, posinf=1e6, neginf=-1e6)
+        np.clip(x_safe, -1e6, 1e6, out=x_safe)
         result = hovorka_equations(
             int(t),
-            x_safe.tolist(),
+            x_safe,
             params,
             input_func,
             scenario=0,
         )
         dy = np.asarray(result, dtype=np.float64)
-        dy = np.nan_to_num(dy, nan=0.0, posinf=1e5, neginf=-1e5)
-        dy = np.clip(dy, -1e5, 1e5)
+        dy = np.nan_to_num(dy, copy=False, nan=0.0, posinf=1e5, neginf=-1e5)
+        np.clip(dy, -1e5, 1e5, out=dy)
         return dy
 
     sol = solve_ivp(  # type: ignore[unknown-variable-type]
@@ -97,12 +98,7 @@ def simulate_duration(
         state_traj = clip_state_trajectory(state_traj)
 
     final_state = state_traj[:, -1]
-    final_glycemia = float(measure_glycemia(
-        tuple(final_state.tolist()),
-        params,
-        noise_std=0.0,
-        output_unit='mmol/L',
-    ))
+    final_glycemia = float(final_state[0]) / vg_bw if vg_bw > 0.0 else 0.0
 
     return final_state, final_glycemia
 
@@ -257,12 +253,8 @@ def find_insulin_sensitivity_factor(
     x0_arr = np.array(x0, dtype=np.float64)
 
     # Measure actual initial glycemia (may differ slightly from desired due to bisection tolerance)
-    actual_initial_g = float(measure_glycemia(
-        tuple(x0_arr.tolist()),
-        params,
-        noise_std=0.0,
-        output_unit='mmol/L',
-    ))
+    vg_bw = float(params["VG"]) * float(params["BW"])
+    actual_initial_g = float(x0_arr[0]) / vg_bw if vg_bw > 0.0 else 0.0
 
     # Derive calibrated basal from steady state
     tau_i = float(params["tauI"])

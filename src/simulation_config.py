@@ -15,6 +15,7 @@ class SimulationConfig:
     noise_autocorr: float = 0.7
     random_scenarios: bool = False
     clip_states: bool = True
+    enable_plots: bool = True
     random_seed: Optional[int] = None
     basal_hourly: float = 0.5
     use_calibrated_basal: bool = True

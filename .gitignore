@@ -193,6 +193,7 @@ cython_debug/
 
 # Folder data
 /monte_carlo_results
+/monte_carlo_results_parallel
 
 # Agents markdown files
 CLAUDE.md

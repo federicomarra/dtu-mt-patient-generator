@@ -13,8 +13,8 @@ if __name__ == "__main__":
     workers = max(1, (os.cpu_count() or 2) // 2)
 
     config = SimulationConfig(
-        n_patients=10,
-        n_days=3,
+        n_patients=100,
+        n_days=5,
         international_unit=True,
         noise_std=0.10,
         noise_autocorr=0.7,

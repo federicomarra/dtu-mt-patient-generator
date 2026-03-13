@@ -41,9 +41,9 @@ class SimulationConfig:
     init_insulin_sensitivity_factor: float = 2.8
 
     enable_iob_bolus_guard: bool = True
-    iob_guard_units: float = 3.0
-    iob_full_attenuation_units: float = 6.0
-    iob_max_icr_multiplier: float = 2.0
+    iob_guard_units: float = 4.0
+    iob_full_attenuation_units: float = 8.0
+    iob_max_icr_multiplier: float = 1.6
 
     enable_correction_isf: bool = True
     correction_isf_target_mmol: float = 6.5

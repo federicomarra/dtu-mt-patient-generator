@@ -444,7 +444,7 @@ def _apply_meal(
     
     meal_time = meal["time"]
     duration = meal["duration"]
-    carbs_grams = meal["carbs"]
+    carbs_grams = float(meal["carbs"])
     
     # Carb intake during meal consumption
     if meal_time <= current_time < meal_time + duration:
@@ -502,7 +502,7 @@ def scenario_inputs(
     # Generate or use provided meal schedule
     if meal_schedule is None:
         meal_schedule = generate_meal_schedule(scenario=scenario)
-    
+
     u: float = basal
     d: float = 0.0
     

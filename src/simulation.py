@@ -2,9 +2,10 @@
 
 # Library Imports
 from __future__ import annotations
-from typing import Any
+from typing import Protocol, TypedDict, cast
 import numpy as np  # type: ignore[import-untyped]
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+from matplotlib.axes import Axes  # type: ignore[import-untyped]
 from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 from tqdm import tqdm
 
@@ -30,6 +31,54 @@ from src.simulation_utils import (
     get_patient_color,
     measure_glycemia_day,
 )
+
+
+class DayResult(TypedDict):
+    blood_glucose: np.ndarray
+    insulin_mU_min: np.ndarray
+    cho_mg_min: np.ndarray
+
+
+class PatientResult(TypedDict):
+    patient_id: int
+    params: ParameterSet
+    days: dict[int, DayResult]
+
+
+class InputPlotAxes(Protocol):
+    def plot(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        *,
+        color: str,
+        alpha: float | None = None,
+        linewidth: float = 1.0,
+        linestyle: str | None = None,
+        label: str | None = None,
+    ) -> list[object]: ...
+
+    def axvline(self, x: float, *, color: str, linestyle: str, alpha: float) -> object: ...
+
+    def set_title(self, label: str, *, fontsize: int, fontweight: str) -> object: ...
+
+    def set_xlabel(self, xlabel: str) -> object: ...
+
+    def set_ylabel(self, ylabel: str, *, color: str) -> object: ...
+
+    def tick_params(self, *, axis: str, labelcolor: str) -> None: ...
+
+    def grid(self, visible: bool, *, alpha: float, linestyle: str, linewidth: float) -> None: ...
+
+    def set_xlim(self, left: float, right: float) -> object: ...
+
+    def set_xticks(self, ticks: np.ndarray) -> list[object]: ...
+
+    def get_legend_handles_labels(self) -> tuple[list[object], list[str]]: ...
+
+    def legend(self, handles: list[object], labels: list[str], *, loc: str, framealpha: float) -> object: ...
+
+    def twinx(self) -> InputPlotAxes: ...
 
 
 # --- Main Simulation Loop ---
@@ -66,7 +115,7 @@ def run_simulation(
     plt.figure(figsize=(14, 7))  # type: ignore[misc]
     
     # Storage for results
-    results_tot: dict[int, dict[str, Any]] = {}
+    results_tot: dict[int, PatientResult] = {}
     all_patient_trajectories: list[np.ndarray] = []
     sampled_patients = 0
     accepted_patients = 0
@@ -170,6 +219,9 @@ def run_simulation(
                 # Time span for this day
                 t_span = (0, minutes_per_day)
                 t_eval_day = np.arange(0, minutes_per_day + 1)  # Every minute
+                n_measurements = len(t_eval_day)
+                day_insulin = np.full(n_measurements, np.nan, dtype=np.float64)
+                day_cho = np.full(n_measurements, np.nan, dtype=np.float64)
             
                 # Define ODE function with patient-specific parameters
                 # NOTE: Using scenario_with_cached_meals for deterministic meal scheduling
@@ -178,7 +230,7 @@ def run_simulation(
                     x_safe = np.clip(x_safe, -1e6, 1e6)
                     current_min = int(np.floor(t))
                     # Use absolute simulation minute to keep latch timers consistent across days.
-                    current_abs_min = day_idx * minutes_per_day + current_min
+                    current_abs_min: int = int(day_idx) * minutes_per_day + current_min
                     g_est = measure_glycemia(tuple(x_safe.tolist()), patient_params, noise_std=0.0, output_unit='mmol/L')
 
                     # Basic insulin-on-board (IOB) estimate from subcutaneous depots [U].
@@ -195,6 +247,21 @@ def run_simulation(
                         state=controller_state,
                     )
 
+                    # Capture applied exogenous inputs at this minute for export/debug.
+                    minute_idx = int(np.floor(t))
+                    u_applied, d_applied = scenario_with_cached_meals(
+                        time=minute_idx,
+                        patient_id=sim_patient_id,
+                        day=int(day_idx),
+                        basal_hourly=basal_hourly_effective,
+                        scenario=scenario,
+                        insulin_carbo_ratio=insulin_carbo_ratio_effective,
+                        seed=config.random_seed,
+                    )
+                    if 0 <= minute_idx < n_measurements:
+                        day_insulin[minute_idx] = float(u_applied)
+                        day_cho[minute_idx] = float(d_applied)
+
                     result = hovorka_equations(
                         int(t),
                         x_safe.tolist(),
@@ -202,7 +269,7 @@ def run_simulation(
                         scenario_with_cached_meals,
                         scenario=scenario,
                         patient_id=sim_patient_id,
-                        day=day_idx,
+                        day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
                         meal_schedule=None,
@@ -245,9 +312,8 @@ def run_simulation(
                         "Using previous state as fallback."
                     )
                     state_trajectory = np.asarray(current_state, dtype=np.float64).reshape(-1, 1)
-                sol_any: Any = sol  # type: ignore[misc]
-                solver_success = bool(getattr(sol_any, "success", True))  # type: ignore[misc]
-                solver_message = str(getattr(sol_any, "message", ""))  # type: ignore[misc]
+                solver_success = bool(getattr(sol, "success", True))  # type: ignore[misc]
+                solver_message = str(getattr(sol, "message", ""))  # type: ignore[misc]
                 if not solver_success:
                     print(
                         f"Warning: ODE solver ended early for patient {sim_patient_id}, day {day_idx}: {solver_message}"
@@ -259,9 +325,16 @@ def run_simulation(
             
                 # Update current state for next day (continuity)
                 current_state = np.asarray(state_trajectory[:, -1], dtype=np.float64)
+
+                # Fill occasional missing minute captures from solver internals.
+                basal_fallback = basal_hourly_patient * 1000.0 / 60.0
+                for idx in range(n_measurements):
+                    if np.isnan(day_insulin[idx]):
+                        day_insulin[idx] = day_insulin[idx - 1] if idx > 0 else basal_fallback
+                    if np.isnan(day_cho[idx]):
+                        day_cho[idx] = day_cho[idx - 1] if idx > 0 else 0.0
             
                 # Generate autocorrelated CGM noise for this day
-                n_measurements = len(t_eval_day)
                 noise_sequence = generate_autocorrelated_noise(
                     n_measurements,
                     config.noise_std,
@@ -291,7 +364,11 @@ def run_simulation(
                     glycemia_day_physio = glycemia_day_physio * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
             
                 # Store results for this day
-                results_tot[sim_patient_id]["days"][day_idx] = glycemia_day_array
+                results_tot[sim_patient_id]["days"][day_idx] = {
+                    "blood_glucose": glycemia_day_array,
+                    "insulin_mU_min": day_insulin,
+                    "cho_mg_min": day_cho,
+                }
                 # Day 0 is kept in full (0..1440 = 1441 points).
                 # Subsequent days drop their first point (minute 0 = same physical
                 # timestamp as minute 1440 of the previous day) to avoid a duplicate
@@ -399,7 +476,7 @@ def run_simulation(
     if now_sim_folder_path and any(export_config.to_list()):
         try:
             # Prepare config metadata for logging
-            config_metadata: dict[str, Any] = {
+            config_metadata: dict[str, object] = {
                 "n_patients": config.n_patients,
                 "n_days": config.n_days,
                 "international_unit": config.international_unit,
@@ -544,3 +621,114 @@ def run_simulation(
         print("Plot saved to file.")
     else:
         plt.show()  # type: ignore[misc]
+
+    # Secondary plot: insulin delivery and CHO intake (input signals).
+    # Use rolling 60-minute delivered totals for interpretable hourly magnitudes.
+    insulin_traces_u_min: list[np.ndarray] = []
+    cho_traces_g_min: list[np.ndarray] = []
+
+    for patient_id in sorted(results_tot.keys()):
+        days_obj = results_tot[patient_id]["days"]
+        insulin_segments: list[np.ndarray] = []
+        cho_segments: list[np.ndarray] = []
+        for day_idx in sorted(days_obj.keys()):
+            day_record = days_obj[day_idx]
+            # Keep native per-minute units for visualization:
+            # insulin_mU_min -> U/min, cho_mg_min -> g/min.
+            insulin_day = np.asarray(day_record.get("insulin_mU_min", []), dtype=np.float64) / 1000.0
+            cho_day = np.asarray(day_record.get("cho_mg_min", []), dtype=np.float64) / 1000.0
+            if insulin_day.size == 0 or cho_day.size == 0:
+                continue
+            # Drop duplicate boundary point for the concatenated full trace
+            insulin_seg = insulin_day if day_idx == 0 else insulin_day[1:]
+            cho_seg = cho_day if day_idx == 0 else cho_day[1:]
+            insulin_segments.append(insulin_seg)
+            cho_segments.append(cho_seg)
+        if insulin_segments and cho_segments:
+            insulin_traces_u_min.append(np.concatenate(insulin_segments))
+            cho_traces_g_min.append(np.concatenate(cho_segments))
+
+    if insulin_traces_u_min and cho_traces_g_min:
+        plt.figure(figsize=(14, 6))  # type: ignore[misc]
+        ax_ins_raw: Axes = plt.gca()  # type: ignore[misc,assignment]
+        ax_ins = cast(InputPlotAxes, ax_ins_raw)
+        ax_cho = cast(InputPlotAxes, ax_ins_raw.twinx())
+
+        rolling_window_min = 60
+        rolling_kernel = np.ones(rolling_window_min, dtype=np.float64)
+        left_pad = rolling_window_min // 2
+        right_pad = rolling_window_min - 1 - left_pad
+
+        ins_label_added = False
+        cho_label_added = False
+
+        for tr in insulin_traces_u_min:
+            t_h = np.arange(tr.size) / 60.0
+            # U/min -> rolling 60-min total [U/hour-equivalent]
+            tr_padded = np.pad(tr, (left_pad, right_pad), mode='edge')
+            tr_u_hr = np.convolve(tr_padded, rolling_kernel, mode='valid')
+            ax_ins.plot(
+                t_h,
+                tr_u_hr,
+                color="#d62728",
+                alpha=0.16,
+                linewidth=1.1,
+                label="Insulin [U/hr]" if not ins_label_added else None,
+            )
+            ins_label_added = True
+        for tr in cho_traces_g_min:
+            t_h = np.arange(tr.size) / 60.0
+            # g/min -> rolling 60-min total [g/hour-equivalent]
+            tr_padded = np.pad(tr, (left_pad, right_pad), mode='edge')
+            tr_g_hr = np.convolve(tr_padded, rolling_kernel, mode='valid')
+            ax_cho.plot(
+                t_h,
+                tr_g_hr,
+                color="#1f77b4",
+                alpha=0.16,
+                linewidth=1.1,
+                label="CHO [g/hr]" if not cho_label_added else None,
+            )
+            cho_label_added = True
+
+        for day in range(1, config.n_days):
+            ax_ins.axvline(24 * day, color='gray', linestyle=':', alpha=0.25)
+
+        ax_ins.set_title(
+            f"Insulin And Carbohydrate Input Signals\n"
+            f"{accepted_patients} accepted / {sampled_patients} sampled patients × {config.n_days} days",
+            fontsize=13,
+            fontweight='bold',
+        )
+        ax_ins.set_xlabel("Time (hours)")
+        ax_ins.set_ylabel("Insulin [U/hr]", color="#d62728")
+        ax_cho.set_ylabel("Carbohydrates [g/hr]", color="#1f77b4")
+        ax_ins.tick_params(axis='y', labelcolor="#d62728")
+        ax_cho.tick_params(axis='y', labelcolor="#1f77b4")
+        ax_ins.grid(True, alpha=0.25, linestyle=':', linewidth=0.5)
+
+        hours_total = 24 * config.n_days
+        ax_ins.set_xlim(0, hours_total)
+        if hours_total <= 48:
+            tick_interval = 4
+        elif hours_total <= 168:
+            tick_interval = 12
+        else:
+            tick_interval = 24
+        ax_ins.set_xticks(np.arange(0, hours_total + 1, tick_interval))
+
+        lines_1, labels_1 = ax_ins.get_legend_handles_labels()
+        lines_2, labels_2 = ax_cho.get_legend_handles_labels()
+        ax_ins.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', framealpha=0.9)
+
+        plt.tight_layout()  # type: ignore[misc]
+
+        if now_sim_folder_path and any(export_config.to_list()):
+            try:
+                plt.savefig(now_sim_folder_path / "inputs_plot.png", dpi=150, bbox_inches='tight')  # type: ignore[misc]
+            except Exception as e:
+                print(f"Warning: Failed to save inputs plot: {e}")
+
+        backend_name_inputs = plt.get_backend().lower()  # type: ignore[misc]
+        if "agg" not in backend_name_inputs:
+            plt.show()  # type: ignore[misc]

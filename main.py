@@ -11,14 +11,14 @@ if __name__ == "__main__":
     
     # Simulation configuration
     sim_config = SimulationConfig(
-        n_patients=50,
-        n_days=5,
+        n_patients=100,
+        n_days=7,
         international_unit=True,
         noise_std=0.10,
         noise_autocorr=0.7,  # Temporal correlation
         random_scenarios=True,
         clip_states=True,
-        random_seed=42  # For reproducibility (change for different cohorts)
+        random_seed=999  # For reproducibility (change for different cohorts)
     )
     
     # Export configuration

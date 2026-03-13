@@ -16,6 +16,15 @@ import pandas as pd  # type: ignore[import-untyped]
 import numpy as np  # type: ignore[import-untyped]
 
 
+def pick_input_column(df: pd.DataFrame, primary: str, legacy: str) -> str | None:
+    """Pick preferred input column name with legacy fallback."""
+    if primary in df.columns:
+        return primary
+    if legacy in df.columns:
+        return legacy
+    return None
+
+
 def find_latest_results() -> Path:
     """Find the most recent PARQUET orCSV results file."""
     results_dir = Path("monte_carlo_results")
@@ -51,10 +60,11 @@ def analyze_results(file_path: Path) -> None:
     print(f"Analyzing: {file_path}")
     print(f"{'='*70}\n")
     
+    df: pd.DataFrame
     if file_path.suffix == '.parquet':
-        df: pd.DataFrame = pd.read_parquet(file_path)  # type: ignore[assignment]
+        df = pd.read_parquet(file_path)  # type: ignore[assignment]
     else:
-        df: pd.DataFrame = pd.read_csv(file_path)  # type: ignore[assignment]
+        df = pd.read_csv(file_path)  # type: ignore[assignment]
     
     # Auto-detect unit (mg/dL vs mmol/L)
     glucose_max = float(df['blood_glucose'].max())  # type: ignore[arg-type]
@@ -78,6 +88,9 @@ def analyze_results(file_path: Path) -> None:
     print(f'Mean:   {df["blood_glucose"].mean():.1f}')
     print(f'Median: {df["blood_glucose"].median():.1f}')
     print(f'Std:    {df["blood_glucose"].std():.1f}')
+
+    insulin_col = pick_input_column(df, "insulin_mU_min", "insulin")
+    cho_col = pick_input_column(df, "cho_mg_min", "cho")
     
     # Range analysis
     hypo_count: int = int((df['blood_glucose'] < hypo_threshold).sum())  # type: ignore[arg-type]
@@ -109,6 +122,70 @@ def analyze_results(file_path: Path) -> None:
     print(f'Guard threshold: {guard_threshold:.1f} {unit_str}')
     print(f'Time below guard: {below_guard}/{total} ({100*below_guard/total:.1f}%)')
     print('(When guard is active, basal insulin is suspended)')
+
+    # Input channel analysis
+    print('\n=== Input Signals ===')
+    if insulin_col is None:
+        print('Insulin column not found (expected insulin_mU_min or insulin).')
+    else:
+        insulin_mU = pd.to_numeric(df[insulin_col], errors='coerce').fillna(0.0)
+        insulin_u = insulin_mU / 1000.0
+        total_insulin_u = float(insulin_u.sum())
+        print(f'Total insulin delivered: {total_insulin_u:.2f} U  (stored as mU/min)')
+
+        insulin_by_patient = insulin_u.groupby(df['patient_id']).sum()
+        if 'day' in df.columns:
+            ins_pt_day = insulin_u.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
+            ins_cohort_per_day = ins_pt_day.groupby(level=1).mean()
+            day_strs_ins: list[str] = [
+                f"Day {int(d)}: {float(v):.2f}" for d, v in ins_cohort_per_day.items()  # type: ignore[arg-type]
+            ]
+            print(f"Cohort avg insulin per day [U]:  {',  '.join(day_strs_ins)}")
+
+        if 'day' in df.columns:
+            print('  Per-patient, per-day insulin [U]:')
+            pt_day = insulin_u.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
+            days_present = sorted(df['day'].unique())
+            header = f"  {'Patient':<10}" + "".join(f" {'Day '+str(d):>9}" for d in days_present) + f" {'Total':>9}"
+            print(header)
+            for pid in sorted(df['patient_id'].unique()):
+                row_total = float(insulin_by_patient.get(pid, 0.0))
+                parts: list[str] = []
+                for d in days_present:
+                    val = float(pt_day.get((pid, d), 0.0))
+                    parts.append(f'{val:9.2f}')
+                print(f"  {str(pid):<10}" + " ".join(parts) + f" {row_total:9.2f}")
+
+    if cho_col is None:
+        print('CHO column not found (expected cho_mg_min or cho).')
+    else:
+        cho_mg = pd.to_numeric(df[cho_col], errors='coerce').fillna(0.0)
+        cho_g = cho_mg / 1000.0
+        total_cho_g = float(cho_g.sum())
+        print(f'Total CHO delivered:     {total_cho_g:.2f} g  (stored as mg/min)')
+
+        cho_by_patient = cho_g.groupby(df['patient_id']).sum()
+        if 'day' in df.columns:
+            cho_pt_day = cho_g.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
+            cho_cohort_per_day = cho_pt_day.groupby(level=1).mean()
+            day_strs_cho: list[str] = [
+                f"Day {int(d)}: {float(v):.2f}" for d, v in cho_cohort_per_day.items()  # type: ignore[arg-type]
+            ]
+            print(f"Cohort avg CHO per day [g]:      {',  '.join(day_strs_cho)}")
+
+        if 'day' in df.columns:
+            print('  Per-patient, per-day CHO [g]:')
+            pt_day_cho = cho_g.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
+            days_present = sorted(df['day'].unique())
+            header = f"  {'Patient':<10}" + "".join(f" {'Day '+str(d):>9}" for d in days_present) + f" {'Total':>9}"
+            print(header)
+            for pid in sorted(df['patient_id'].unique()):
+                row_total = float(cho_by_patient.get(pid, 0.0))
+                parts: list[str] = []
+                for d in days_present:
+                    val = float(pt_day_cho.get((pid, d), 0.0))
+                    parts.append(f'{val:9.2f}')
+                print(f"  {str(pid):<10}" + " ".join(parts) + f" {row_total:9.2f}")
     
     # Extreme values
     print('\n=== Extreme Values ===')

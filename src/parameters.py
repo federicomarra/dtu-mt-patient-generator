@@ -174,8 +174,8 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     # Carbohydrate bioavailability: physiological range 0.7–0.9 for T1D adults
     # (upper bound was incorrectly 1.2 = 120% absorption, which is physically impossible)
     p["Ag"] = float(rng.uniform(0.7, 0.9))
-    # Body weight: broadened to 50–110 kg to include lighter/female T1D adults
-    p["BW"] = float(rng.uniform(50.0, 110.0))
+    # Body weight: constrained male cohort range for this simulation setup.
+    p["BW"] = float(rng.uniform(65.0, 95.0))
 
     return p
 

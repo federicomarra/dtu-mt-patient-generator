@@ -9,7 +9,9 @@ from typing import List, Optional, Mapping, Sequence, SupportsFloat, TypedDict, 
 
 # File imports
 PatientId = int | str
-DayValues = Mapping[int, Sequence[SupportsFloat] | np.ndarray]
+DaySeries = Sequence[SupportsFloat] | np.ndarray
+DayRecord = Mapping[str, DaySeries]
+DayValues = Mapping[int, DaySeries | DayRecord]
 
 @dataclass
 class ExportConfig:
@@ -90,9 +92,41 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
         
         for day, values in days.items():
 
-            values_arr = np.asarray(values)
+            insulin_arr: np.ndarray
+            cho_arr: np.ndarray
+            if isinstance(values, Mapping):
+                values_arr = np.asarray(values.get("blood_glucose", []), dtype=np.float64)
+                # Backward-compatible read: accept both legacy and explicit-unit keys.
+                insulin_arr = np.asarray(
+                    values.get("insulin_mU_min", values.get("insulin", [])),
+                    dtype=np.float64,
+                )
+                cho_arr = np.asarray(
+                    values.get("cho_mg_min", values.get("cho", [])),
+                    dtype=np.float64,
+                )
+            else:
+                values_arr = np.asarray(values, dtype=np.float64)
+                insulin_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
+                cho_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
+
             if values_arr.size == 0:
                 continue
+
+            # Align optional input arrays to glucose length.
+            if insulin_arr.size != values_arr.size:
+                insulin_aligned = np.full(values_arr.size, np.nan, dtype=np.float64)
+                common = min(insulin_arr.size, values_arr.size)
+                if common > 0:
+                    insulin_aligned[:common] = insulin_arr[:common]
+                insulin_arr = insulin_aligned
+
+            if cho_arr.size != values_arr.size:
+                cho_aligned = np.full(values_arr.size, np.nan, dtype=np.float64)
+                common = min(cho_arr.size, values_arr.size)
+                if common > 0:
+                    cho_aligned[:common] = cho_arr[:common]
+                cho_arr = cho_aligned
 
             day_int = int(day)
             minutes = np.arange(values_arr.size, dtype=int)
@@ -105,12 +139,23 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "minute": minutes,
                 "absolute_minute": absolute_minutes,
                 "time": times.tolist(),
-                "blood_glucose": values_arr.astype(float)
+                "blood_glucose": values_arr.astype(float),
+                "cho_mg_min": cho_arr.astype(float),
+                "insulin_mU_min": insulin_arr.astype(float),
             }))
 
     if not blocks:
         return pd.DataFrame(
-            columns=["patient_id", "day", "minute", "absolute_minute", "time", "blood_glucose"]
+            columns=[
+                "patient_id",
+                "day",
+                "minute",
+                "absolute_minute",
+                "time",
+                "blood_glucose",
+                "cho_mg_min",
+                "insulin_mU_min",
+            ]
         )
 
     df = pd.concat(blocks, ignore_index=True)

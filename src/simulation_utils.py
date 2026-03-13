@@ -85,7 +85,7 @@ def measure_glycemia_day(
 
 def create_export_directory(base_folder: str = "monte_carlo_results") -> Path | None:
     """Create timestamped export directory, returning None on failure."""
-    folder_path: Path | None = Path(base_folder)
+    folder_path: Path = Path(base_folder)
     try:
         folder_path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

@@ -12,7 +12,7 @@ from tqdm import tqdm
 # --- Imports from src ---
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
 from src.parameters import generate_monte_carlo_patients
-from src.input import scenario_with_cached_meals, N_SCENARIOS, clear_meal_cache
+from src.input import scenario_with_cached_meals, N_SCENARIOS, SCENARIO_WEIGHTS, clear_meal_cache
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
 from src.simulation_config import SimulationConfig
@@ -217,9 +217,9 @@ def run_simulation(
             
                 # Select scenario for this day
                 if config.random_scenarios:
-                    scenario = int(rng.integers(1, N_SCENARIOS + 1))
+                    scenario = int(rng.choice(N_SCENARIOS, p=SCENARIO_WEIGHTS)) + 1
                 else:
-                    scenario = 1
+                    scenario = int(config.fixed_scenario)
             
                 # Time span for this day
                 t_span = (0, minutes_per_day)
@@ -254,13 +254,14 @@ def run_simulation(
 
                     # Capture applied exogenous inputs at this minute for export/debug.
                     minute_idx = int(np.floor(t))
-                    u_applied, d_applied = scenario_with_cached_meals(
+                    u_applied, d_applied, activity_applied = scenario_with_cached_meals(
                         time=minute_idx,
                         patient_id=sim_patient_id,
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
                         scenario=scenario,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
+                        patient_age_years=float(patient_params["age_years"]),
                         seed=config.random_seed,
                     )
                     if 0 <= minute_idx < n_measurements:
@@ -277,9 +278,10 @@ def run_simulation(
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
+                        patient_age_years=float(patient_params["age_years"]),
                         meal_schedule=None,
                         seed=config.random_seed,
-                        precomputed_inputs=(float(u_applied), float(d_applied)),
+                        precomputed_inputs=(float(u_applied), float(d_applied), float(activity_applied)),
                     )
                     dy = np.asarray(result, dtype=np.float64)
                     apply_hypo_rescue_to_derivative(
@@ -485,6 +487,34 @@ def run_simulation(
     # Export results if requested
     if now_sim_folder_path and any(export_config.to_list()):
         try:
+            accepted_ages: list[float] = []
+            for p_data in results_tot.values():
+                params = p_data.get("params")
+                age_raw = params.get("age_years")
+                if age_raw is not None:
+                    try:
+                        accepted_ages.append(float(age_raw))
+                    except (TypeError, ValueError):
+                        pass
+            age_summary: dict[str, float | int | None]
+            if accepted_ages:
+                age_arr = np.asarray(accepted_ages, dtype=np.float64)
+                age_summary = {
+                    "count": int(age_arr.size),
+                    "mean_years": round(float(np.mean(age_arr)), 3),
+                    "std_years": round(float(np.std(age_arr)), 3),
+                    "min_years": round(float(np.min(age_arr)), 3),
+                    "max_years": round(float(np.max(age_arr)), 3),
+                }
+            else:
+                age_summary = {
+                    "count": 0,
+                    "mean_years": None,
+                    "std_years": None,
+                    "min_years": None,
+                    "max_years": None,
+                }
+
             # Prepare config metadata for logging
             config_metadata: dict[str, object] = {
                 "n_patients": config.n_patients,
@@ -493,6 +523,7 @@ def run_simulation(
                 "noise_std_mmol_L": config.noise_std,
                 "noise_autocorr": config.noise_autocorr,
                 "random_scenarios": config.random_scenarios,
+                "fixed_scenario": config.fixed_scenario,
                 "random_seed": config.random_seed,
                 "basal_hourly_U_hr": config.basal_hourly,
                 "use_calibrated_basal": config.use_calibrated_basal,
@@ -551,6 +582,7 @@ def run_simulation(
                 "instability_hyper_pct_threshold": instability_hyper_pct,
                 "quality_max_hypo_pct_threshold": quality_max_hypo_pct,
                 "quality_max_hyper_pct_threshold": quality_max_hyper_pct,
+                "accepted_age_years_summary": age_summary,
             }
             
             export_to_formats(
@@ -630,8 +662,12 @@ def run_simulation(
         
         # Show plot if interactive backend is available
         backend_name = plt.get_backend().lower()  # type: ignore[misc]
-        if "agg" in backend_name and show_summary:
-            print("Plot saved to file.")
+        if "agg" in backend_name:
+            if show_summary:
+                if now_sim_folder_path and any(export_config.to_list()):
+                    print("Plot saved to file.")
+                else:
+                    print("Using non-interactive backend; enable export to save plot files.")
         else:
             plt.show()  # type: ignore[misc]
 

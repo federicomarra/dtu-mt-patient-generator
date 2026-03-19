@@ -14,12 +14,19 @@ class SimulationConfig:
     noise_std: float = 0.10
     noise_autocorr: float = 0.7
     random_scenarios: bool = False
+    fixed_scenario: int = 1
     clip_states: bool = True
     enable_plots: bool = True
     random_seed: Optional[int] = None
     basal_hourly: float = 0.5
     use_calibrated_basal: bool = True
     initial_target_glucose_mgdl: float = 100.0
+    initial_glucose_acceptance_min_mmol: float = 4.5
+    initial_glucose_acceptance_max_mmol: float = 7.2
+    instability_max_glucose_mmol: float = 17.0
+    instability_hyper_pct_threshold: float = 30.0
+    quality_max_hypo_pct_threshold: float = 4.0
+    quality_max_hyper_pct_threshold: float = 12.0
 
     enable_hypo_guard: bool = True
     hypo_guard_mmol: float = 4.2

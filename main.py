@@ -4,10 +4,12 @@
 from src.simulation import run_simulation
 from src.export import ExportConfig
 from src.simulation_config import SimulationConfig
+from analyze_simulation import analyze_results, find_latest_results
 
 if __name__ == "__main__":
     # Configuration
     skip_terminal_input: bool = True
+    run_post_analysis: bool = True
     
     # Simulation configuration
     sim_config = SimulationConfig(
@@ -41,3 +43,11 @@ if __name__ == "__main__":
     
     # Run simulation
     run_simulation(config=sim_config, export_config=export_config)
+
+    # Optional post-run analysis from the latest exported results file.
+    if run_post_analysis and any(export_config.to_list()):
+        try:
+            latest_results = find_latest_results()
+            analyze_results(latest_results)
+        except Exception as exc:
+            print(f"Warning: post-run analysis failed: {exc}")

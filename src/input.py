@@ -5,6 +5,16 @@ from typing import TypedDict, Optional, Tuple
 
 N_SCENARIOS: int = 6  # Number of different input scenarios (e.g., different meal times, insulin doses)
 
+# Sampling weights for scenarios 1-6.
+# Scenarios 1-3 (normal, active, sedentary) are common day-to-day patterns.
+# Scenarios 4-6 (long lunch, missed bolus, late bolus) are deliberate anomalies
+# and should be rarer so the dataset is realistic and anomaly-class imbalance
+# matches real-world prevalence.
+_SCENARIO_WEIGHTS_RAW: list[float] = [0.25, 0.25, 0.25, 0.083, 0.083, 0.083]
+SCENARIO_WEIGHTS: list[float] = [
+    w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
+]
+
 
 # ============================================================================
 # Time Conversion Helper
@@ -86,6 +96,22 @@ class MealSchedule(TypedDict):
     late_bolus_id: Optional[int]   # For late bolus scenario (1-5 or None)
 
 
+class ExerciseSpec(TypedDict):
+    """Specification of one exercise block represented as a fraction of HR reserve."""
+    start: int
+    duration: int
+    hr_reserve_fraction: float
+
+
+class ExerciseSchedule(TypedDict):
+    """Daily exercise schedule with one optional main session and optional anaerobic bursts."""
+    enabled: bool
+    session: ExerciseSpec
+    burst_period_min: int
+    burst_on_min: int
+    burst_multiplier: float
+
+
 _PATIENT_SEED_FACTOR: int = 10_000
 _SCENARIO_SEED_FACTOR: int = 1_000_000
 _DAY_SEED_FACTOR: int = 97
@@ -95,6 +121,34 @@ _SMALL_CARB_JITTER_PCT: float = 0.06
 _IRREGULAR_DAY_PROBABILITY: float = 0.15
 _IRREGULAR_TIME_JITTER_MIN: int = -20
 _IRREGULAR_TIME_JITTER_MAX: int = 21
+
+_EXERCISE_START_MIN: int = time_to_minutes(16, 30)
+_EXERCISE_START_MAX: int = time_to_minutes(20, 30)
+_EXERCISE_DURATION_MIN: int = 30
+_EXERCISE_DURATION_MAX: int = 75
+_EXERCISE_INTENSITY_MIN: int = 35
+_EXERCISE_INTENSITY_MAX: int = 90
+_ANAEROBIC_THRESHOLD_PCT: int = 75
+_EXERCISE_OVERLAP_PROBABILITY: float = 0.15
+_EXERCISE_MIN_GAP_AFTER_SNACK_MIN: int = 20
+_EXERCISE_MIN_GAP_BEFORE_DINNER_MIN: int = 30
+
+_SCENARIO_NORMAL: int = 1
+_SCENARIO_ACTIVE_AFTERNOON: int = 2
+_SCENARIO_SEDENTARY: int = 3
+
+# Scenario guide for input behavior:
+# 1: Normal day (regular meals, light incidental movement, no planned workout)
+# 2: Active day (regular meals + planned afternoon workout)
+# 3: Sedentary day (regular meals, lower incidental movement, no planned workout)
+# 4: Long lunch disturbance (meal-only perturbation)
+# 5: Missed bolus disturbance (meal-only perturbation)
+# 6: Late bolus disturbance (meal-only perturbation)
+
+# Hovorka / Rashid HR constants for converting scenario intensity into ΔHR.
+_HR_REST_BPM: float = 60.0
+_HR_MAX_FLOOR_BPM: float = _HR_REST_BPM + 1.0
+_HR_RESERVE_FRACTION_MAX_SAFE: float = 1.0
 
 
 # ============================================================================
@@ -176,6 +230,162 @@ def generate_meal_schedule(
 
 def _clamp_int(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def _intensity_percent_to_hr_reserve_fraction(intensity_pct: float) -> float:
+    """Map scenario intensity percentage to a 0..1 fraction of HR reserve."""
+    return float(max(0.0, min(100.0, intensity_pct))) / 100.0
+
+
+def _hr_max_from_age(age_years: float) -> float:
+    """Use the classic Fox-Haskell formula requested by the user."""
+    return max(_HR_MAX_FLOOR_BPM, 220.0 - float(age_years))
+
+
+def _hr_reserve_from_age(age_years: float, hr0: float = _HR_REST_BPM) -> float:
+    return max(1.0, _hr_max_from_age(age_years) - hr0)
+
+
+def _hr_reserve_fraction_to_delta_hr(hr_reserve_fraction: float, age_years: float, hr0: float = _HR_REST_BPM) -> float:
+    clipped_fraction = max(0.0, min(_HR_RESERVE_FRACTION_MAX_SAFE, float(hr_reserve_fraction)))
+    return clipped_fraction * _hr_reserve_from_age(age_years, hr0)
+
+
+def _generate_exercise_schedule(
+    *,
+    rng: np.random.Generator,
+    scenario: int,
+    meal_schedule: Optional[MealSchedule] = None,
+) -> ExerciseSchedule:
+    """Create a daily exercise pattern from scenario intent.
+
+    Scenario mapping:
+    - 1 (normal): no planned exercise
+    - 2 (active): one afternoon exercise session (17:00-19:30 neighborhood)
+    - 3 (sedentary): no planned exercise
+    - 4-6 (meal perturbations): no planned exercise
+    """
+    enabled = scenario == _SCENARIO_ACTIVE_AFTERNOON
+
+    duration = int(rng.integers(_EXERCISE_DURATION_MIN, _EXERCISE_DURATION_MAX + 1))
+    intensity_pct = int(rng.integers(_EXERCISE_INTENSITY_MIN, _EXERCISE_INTENSITY_MAX + 1))
+    hr_reserve_fraction = _intensity_percent_to_hr_reserve_fraction(float(intensity_pct))
+
+    start = int(rng.integers(_EXERCISE_START_MIN, _EXERCISE_START_MAX + 1))
+    if enabled and meal_schedule is not None:
+        allow_overlap = bool(rng.random() < _EXERCISE_OVERLAP_PROBABILITY)
+
+        snack_start = int(meal_schedule["afternoon_snack"]["time"])
+        snack_end = snack_start + int(meal_schedule["afternoon_snack"]["duration"])
+        dinner_start = int(meal_schedule["dinner"]["time"])
+
+        if not allow_overlap:
+            # Main dataset mode: keep exercise separated from afternoon snack and dinner.
+            clean_start_min = max(_EXERCISE_START_MIN, snack_end + _EXERCISE_MIN_GAP_AFTER_SNACK_MIN)
+            clean_start_max = min(_EXERCISE_START_MAX, dinner_start - duration - _EXERCISE_MIN_GAP_BEFORE_DINNER_MIN)
+            if clean_start_min <= clean_start_max:
+                start = int(rng.integers(clean_start_min, clean_start_max + 1))
+        else:
+            # Controlled outlier mode: intentionally allow overlap with snack or dinner.
+            overlap_windows: list[tuple[int, int]] = []
+
+            snack_overlap_min = max(_EXERCISE_START_MIN, snack_start - duration + 1)
+            snack_overlap_max = min(_EXERCISE_START_MAX, snack_end - 1)
+            if snack_overlap_min <= snack_overlap_max:
+                overlap_windows.append((snack_overlap_min, snack_overlap_max))
+
+            dinner_overlap_min = max(_EXERCISE_START_MIN, dinner_start - duration + 1)
+            dinner_overlap_max = min(_EXERCISE_START_MAX, dinner_start - 1)
+            if dinner_overlap_min <= dinner_overlap_max:
+                overlap_windows.append((dinner_overlap_min, dinner_overlap_max))
+
+            if overlap_windows:
+                window_idx = int(rng.integers(0, len(overlap_windows)))
+                win_min, win_max = overlap_windows[window_idx]
+                start = int(rng.integers(win_min, win_max + 1))
+
+    # For high-intensity sessions, model intermittent anaerobic bouts as periodic spikes.
+    burst_period = 1
+    burst_on = 1
+    burst_multiplier = 1.0
+    if enabled and intensity_pct >= _ANAEROBIC_THRESHOLD_PCT:
+        burst_multiplier = 1.25
+        burst_period = 3
+        burst_on = 1
+    elif enabled and intensity_pct >= 65:
+        burst_multiplier = 1.12
+
+    return {
+        "enabled": enabled,
+        "session": {
+            "start": start,
+            "duration": duration,
+            "hr_reserve_fraction": hr_reserve_fraction,
+        },
+        "burst_period_min": burst_period,
+        "burst_on_min": burst_on,
+        "burst_multiplier": burst_multiplier,
+    }
+
+
+def _baseline_hr_reserve_fraction_for_scenario(time: int, scenario: int) -> float:
+    """Return incidental movement baseline as a fraction of HR reserve.
+
+    This baseline is intentionally modest and synchronized with meal windows:
+    - breakfast window: 06:30-08:30
+    - lunch window: 12:00-13:30
+    - dinner window: 18:30-20:00
+    Scenario 2 adds a separate planned workout on top of this baseline.
+    """
+    minute = int(max(0, min(1439, time)))
+
+    if minute < time_to_minutes(6, 0) or minute >= time_to_minutes(22, 30):
+        return 0.0  # Night/sleep: at resting HR
+
+    if scenario in {4, 5, 6}:
+        # Meal-perturbation scenarios are intentionally exercise-neutral.
+        return 0.0
+
+    if scenario == _SCENARIO_SEDENTARY:
+        if time_to_minutes(6, 30) <= minute < time_to_minutes(8, 30):
+            return 0.02
+        if time_to_minutes(12, 0) <= minute < time_to_minutes(13, 30):
+            return 0.03
+        if time_to_minutes(18, 30) <= minute < time_to_minutes(20, 0):
+            return 0.02
+        return 0.015
+
+    # Scenario 1 and 2 share this light incidental baseline.
+    if time_to_minutes(6, 30) <= minute < time_to_minutes(8, 30):
+        return 0.05
+    if time_to_minutes(12, 0) <= minute < time_to_minutes(13, 30):
+        return 0.07
+    if time_to_minutes(18, 30) <= minute < time_to_minutes(20, 0):
+        return 0.06
+    if time_to_minutes(19, 30) <= minute < time_to_minutes(22, 30):
+        return 0.03
+    return 0.025
+
+
+def _exercise_hr_reserve_fraction_at_minute(time: int, schedule: ExerciseSchedule) -> float:
+    """Return exercise-session effort as a fraction of HR reserve."""
+    if not schedule["enabled"]:
+        return 0.0
+
+    session = schedule["session"]
+    start = session["start"]
+    end = start + session["duration"]
+    if not (start <= time < end):
+        return 0.0
+
+    hr_reserve_fraction = float(session["hr_reserve_fraction"])
+    period = max(1, int(schedule["burst_period_min"]))
+    on = max(1, min(period, int(schedule["burst_on_min"])))
+    local_t = time - start
+    in_burst = (local_t % period) < on
+    if in_burst:
+        hr_reserve_fraction *= float(schedule["burst_multiplier"])
+    return max(0.0, min(_HR_RESERVE_FRACTION_MAX_SAFE, hr_reserve_fraction))
 
 
 def _create_seed(
@@ -393,13 +603,15 @@ def _build_daily_schedule_from_baseline(
     missed_meal_id: Optional[int] = None
     late_bolus_id: Optional[int] = None
 
-    if not irregular_day:
-        if scenario == 4:
-            lunch["duration"] = lunch["duration"] * 2
-        if scenario == 5:
-            missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
-        elif scenario == 6:
-            late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+    # Apply scenario perturbations regardless of irregular_day so that ML labels
+    # remain consistent: a scenario-5 day always has a missed bolus, etc.
+    # irregular_day only affects timing jitter amplitude, not the anomaly label.
+    if scenario == 4:
+        lunch["duration"] = lunch["duration"] * 2
+    elif scenario == 5:
+        missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+    elif scenario == 6:
+        late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
 
     return {
         "breakfast": breakfast,
@@ -476,25 +688,23 @@ def scenario_inputs(
     basal_hourly: float = 0.5,
     scenario: int = 1,
     insulin_carbo_ratio: float = 2.0,
+    patient_age_years: float = 35.0,
     meal_schedule: Optional[MealSchedule] = None,
-) -> Tuple[float, float]:
+    exercise_schedule: Optional[ExerciseSchedule] = None,
+) -> Tuple[float, float, float]:
     """
-    Compute insulin delivery (u) and carbohydrate intake (d) at a given time.
-    
+    Compute insulin delivery (u), carbohydrate intake (d), and ΔHR activity at a given time.
+
     Parameters:
     time: current minute (0-1439 within a day)
     basal_hourly: basal insulin rate [U/hr]
     scenario: which scenario to simulate (1-6)
     insulin_carbo_ratio: insulin-to-carb ratio [g/unit]
+    patient_age_years: patient age for the 220-age HRmax conversion
     meal_schedule: optional pre-computed MealSchedule (for determinism)
-                   If None, generates a new one (non-deterministic per call)
-    
+    exercise_schedule: optional pre-computed ExerciseSchedule (for determinism)
     Returns:
-    (u, d): insulin [mU/min], carbohydrate intake [mg/min]
-    
-    Note:
-    For deterministic simulations, pre-compute meal_schedule once per day
-    and pass it to all 1440 minute calls. See scenario_with_cached_meals().
+    (u, d, activity): insulin [mU/min], carbs [mg/min], activity as ΔHR bpm above rest
     """
     # Convert basal from U/hr to mU/min
     basal = basal_hourly * 1000 / 60  # ~8.33 mU/min for 0.5 U/hr
@@ -505,24 +715,33 @@ def scenario_inputs(
 
     u: float = basal
     d: float = 0.0
+
+    if exercise_schedule is None:
+        exercise_schedule = _generate_exercise_schedule(
+            rng=np.random.default_rng(),
+            scenario=scenario,
+            meal_schedule=meal_schedule,
+        )
     
-    # Apply each meal - 5 regularly scheduled meals for active patient
+    bolus_lead_min = PREANNOUNCED_BOLUS_TIME
+
+    # Apply meals
     breakfast_u, breakfast_d = _apply_meal(
         meal_schedule["breakfast"],
         time,
         insulin_carbo_ratio,
-        PREANNOUNCED_BOLUS_TIME,
+        bolus_lead_min,
         missed=(meal_schedule["missed_meal_id"] == 1),
         late_bolus=(meal_schedule["late_bolus_id"] == 1),
     )
     u += breakfast_u
     d += breakfast_d
-    
+
     morning_snack_u, morning_snack_d = _apply_meal(
         meal_schedule["morning_snack"],
         time,
         insulin_carbo_ratio,
-        PREANNOUNCED_BOLUS_TIME,
+        bolus_lead_min,
         missed=(meal_schedule["missed_meal_id"] == 2),
         late_bolus=(meal_schedule["late_bolus_id"] == 2),
     )
@@ -533,18 +752,18 @@ def scenario_inputs(
         meal_schedule["lunch"],
         time,
         insulin_carbo_ratio,
-        PREANNOUNCED_BOLUS_TIME,
+        bolus_lead_min,
         missed=(meal_schedule["missed_meal_id"] == 3),
         late_bolus=(meal_schedule["late_bolus_id"] == 3),
     )
     u += lunch_u
     d += lunch_d
-    
+
     afternoon_snack_u, afternoon_snack_d = _apply_meal(
         meal_schedule["afternoon_snack"],
         time,
         insulin_carbo_ratio,
-        PREANNOUNCED_BOLUS_TIME,
+        bolus_lead_min,
         missed=(meal_schedule["missed_meal_id"] == 4),
         late_bolus=(meal_schedule["late_bolus_id"] == 4),
     )
@@ -555,14 +774,21 @@ def scenario_inputs(
         meal_schedule["dinner"],
         time,
         insulin_carbo_ratio,
-        PREANNOUNCED_BOLUS_TIME,
+        bolus_lead_min,
         missed=(meal_schedule["missed_meal_id"] == 5),
         late_bolus=(meal_schedule["late_bolus_id"] == 5),
     )
     u += dinner_u
     d += dinner_d
-    
-    return u, d
+
+    baseline_hrr = _baseline_hr_reserve_fraction_for_scenario(time=time, scenario=scenario)
+    session_hrr = _exercise_hr_reserve_fraction_at_minute(time=time, schedule=exercise_schedule)
+    activity = _hr_reserve_fraction_to_delta_hr(
+        hr_reserve_fraction=min(_HR_RESERVE_FRACTION_MAX_SAFE, baseline_hrr + session_hrr),
+        age_years=patient_age_years,
+    )
+
+    return u, d, activity
 
 
 # ============================================================================
@@ -571,6 +797,7 @@ def scenario_inputs(
 
 _patient_baseline_cache: dict[tuple[int, int], MealSchedule] = {}
 _meal_cache: dict[tuple[int, int, int], MealSchedule] = {}
+_exercise_cache: dict[tuple[int, int, int], ExerciseSchedule] = {}
 
 
 def scenario_with_cached_meals(
@@ -580,27 +807,13 @@ def scenario_with_cached_meals(
     basal_hourly: float = 0.5,
     scenario: int = 1,
     insulin_carbo_ratio: float = 2.0,
+    patient_age_years: float = 35.0,
     seed: Optional[int] = None,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """
     Wrapper around scenario_inputs that caches meal schedules per (patient_id, day, scenario).
-    
-    Ensures deterministic behavior with realistic structure:
-    - same patient has a stable baseline routine,
-    - each day has small jitter,
-    - some days have larger deviations (irregular days).
-    
-    Parameters:
-    time: current minute (0-1439)
-    patient_id: unique patient identifier
-    day: day number (for caching key)
-    basal_hourly: basal insulin rate [U/hr]
-    scenario: scenario number (1-6)
-    insulin_carbo_ratio: carb-to-insulin ratio
-    seed: optional random seed (for reproducibility across runs)
-    
-    Returns:
-    (u, d): insulin [mU/min], carbohydrate [mg/min]
+
+    The third return value is ΔHR in bpm above resting heart rate.
     """
     patient_key = (patient_id, scenario)
     cache_key = (patient_id, day, scenario)
@@ -629,13 +842,28 @@ def scenario_with_cached_meals(
             scenario=scenario,
             rng=day_rng,
         )
+
+    if cache_key not in _exercise_cache:
+        ex_rng = _seeded_rng(
+            seed=seed,
+            patient_id=patient_id,
+            scenario=scenario + 17,
+            day=day,
+        )
+        _exercise_cache[cache_key] = _generate_exercise_schedule(
+            rng=ex_rng,
+            scenario=scenario,
+            meal_schedule=_meal_cache[cache_key],
+        )
     
     return scenario_inputs(
         time,
         basal_hourly=basal_hourly,
         scenario=scenario,
         insulin_carbo_ratio=insulin_carbo_ratio,
+        patient_age_years=patient_age_years,
         meal_schedule=_meal_cache[cache_key],
+        exercise_schedule=_exercise_cache[cache_key],
     )
 
 
@@ -643,5 +871,7 @@ def clear_meal_cache() -> None:
     """Clear the meal cache (useful for tests or starting a new cohort)."""
     global _meal_cache
     global _patient_baseline_cache
+    global _exercise_cache
     _meal_cache = {}
     _patient_baseline_cache = {}
+    _exercise_cache = {}

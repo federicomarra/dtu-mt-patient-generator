@@ -10,6 +10,7 @@ If no path provided, finds the most recent results automatically.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 import pandas as pd  # type: ignore[import-untyped]
@@ -88,6 +89,13 @@ def analyze_results(file_path: Path) -> None:
     print(f'Mean:   {df["blood_glucose"].mean():.1f}')
     print(f'Median: {df["blood_glucose"].median():.1f}')
     print(f'Std:    {df["blood_glucose"].std():.1f}')
+    mean_glucose = float(df["blood_glucose"].mean())
+    std_glucose = float(df["blood_glucose"].std())
+    cv_pct = (100.0 * std_glucose / mean_glucose) if mean_glucose > 0.0 else 0.0
+    p5 = float(df["blood_glucose"].quantile(0.05))
+    p95 = float(df["blood_glucose"].quantile(0.95))
+    print(f'CV%:    {cv_pct:.1f}')
+    print(f'P5/P95: {p5:.2f} / {p95:.2f}')
 
     insulin_col = pick_input_column(df, "insulin_mU_min", "insulin")
     cho_col = pick_input_column(df, "cho_mg_min", "cho")
@@ -102,6 +110,16 @@ def analyze_results(file_path: Path) -> None:
     print(f'Hypoglycemia (<{hypo_threshold:.1f}):   {hypo_count:5d}/{total} ({100*hypo_count/total:5.1f}%)')
     print(f'In Range ({hypo_threshold:.1f}-{hyper_threshold:.1f}):    {in_range:5d}/{total} ({100*in_range/total:5.1f}%)')
     print(f'Hyperglycemia (>{hyper_threshold:.1f}): {hyper_count:5d}/{total} ({100*hyper_count/total:5.1f}%)')
+
+    if "patient_age_years" in df.columns:
+        age_series = pd.to_numeric(df["patient_age_years"], errors="coerce").dropna()
+        if not age_series.empty:
+            print("\n=== Age Distribution (accepted cohort) ===")
+            print(f"Count:  {int(age_series.shape[0])}")
+            print(f"Mean:   {float(age_series.mean()):.2f} years")
+            print(f"Std:    {float(age_series.std()):.2f} years")
+            print(f"Min:    {float(age_series.min()):.2f} years")
+            print(f"Max:    {float(age_series.max()):.2f} years")
     
     # Per-patient breakdown
     print('\n=== Per-Patient Analysis ===')
@@ -122,6 +140,20 @@ def analyze_results(file_path: Path) -> None:
     print(f'Guard threshold: {guard_threshold:.1f} {unit_str}')
     print(f'Time below guard: {below_guard}/{total} ({100*below_guard/total:.1f}%)')
     print('(When guard is active, basal insulin is suspended)')
+
+    control_cols = [
+        "guard_active",
+        "rescue_active",
+        "iob_guard_active",
+        "correction_isf_active",
+    ]
+    available_control_cols = [col for col in control_cols if col in df.columns]
+    if available_control_cols:
+        print("\n=== Control Activity Flags ===")
+        for col in available_control_cols:
+            series = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+            active_pct = 100.0 * float((series > 0.5).mean())
+            print(f"{col}: {active_pct:.2f}% active")
 
     # Input channel analysis
     print('\n=== Input Signals ===')
@@ -211,8 +243,12 @@ def analyze_results(file_path: Path) -> None:
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) > 1:
-            file_path = Path(sys.argv[1])
+        parser = argparse.ArgumentParser(description="Analyze simulation export file")
+        parser.add_argument("file", nargs="?", default=None, help="Path to results CSV/Parquet; latest file if omitted")
+        args = parser.parse_args()
+
+        if args.file is not None:
+            file_path = Path(args.file)
         else:
             file_path = find_latest_results()
         

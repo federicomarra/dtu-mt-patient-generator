@@ -23,8 +23,9 @@ class ExportConfig:
         """Convert to list format for backward compatibility."""
         return [self.export_to_parquet, self.export_to_csv]
 
-class PatientData(TypedDict):
+class PatientData(TypedDict, total=False):
     days: DayValues | None
+    params: Mapping[str, SupportsFloat] | Mapping[str, float]
 
 
 ResultsDict = Mapping[PatientId, PatientData]
@@ -89,6 +90,15 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
         if days is None:
             continue
         p_id_str = _format_patient_id(p_id)
+        params_obj = p_data.get("params")
+        patient_age_years = np.nan
+        if isinstance(params_obj, Mapping):
+            age_raw = params_obj.get("age_years")
+            if age_raw is not None:
+                try:
+                    patient_age_years = float(age_raw)
+                except (TypeError, ValueError):
+                    patient_age_years = np.nan
         
         for day, values in days.items():
 
@@ -135,6 +145,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
 
             blocks.append(pd.DataFrame({
                 "patient_id": p_id_str,
+                "patient_age_years": patient_age_years,
                 "day": day_int,
                 "minute": minutes,
                 "absolute_minute": absolute_minutes,
@@ -148,6 +159,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
                 "patient_id",
+                "patient_age_years",
                 "day",
                 "minute",
                 "absolute_minute",

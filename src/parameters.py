@@ -12,9 +12,13 @@ _VG_EXP_NORMAL_MEAN: float = 1.16
 _VG_EXP_NORMAL_STD: float = 0.23
 _VG_EXP_MIN_FOR_POSITIVE_VG: float = 1.01
 _MAX_RESAMPLE_ATTEMPTS: int = 50
+_AGE_YEARS_MIN: float = 18.0
+_AGE_YEARS_MAX: float = 65.0
+_AGE_YEARS_MEAN: float = 35.0
+_AGE_YEARS_STD: float = 12.0
 
 
-def get_base_params() -> ParameterSet:
+def _get_hovorka_base_params() -> ParameterSet:
     """Return standard Hovorka parameters for a reference patient."""
     return {
         "MwG": 180.16,  # [mg/mmol] molecular weight of glucose
@@ -37,7 +41,26 @@ def get_base_params() -> ParameterSet:
         "tauG": 39.908,  # [min] glucose absorption time
         "Ag": 0.7943,  # [1] glucose absorption rate
         "BW": 80.0,  # [kg] body weight
+        "age_years": 35.0,  # [years] adult T1D reference cohort center
+        # Rashid-Hovorka exercise parameters (HR-driven states E1/E2/TE).
+        "rashid_tau_hr": 5.0,
+        "rashid_tau_ex": 120.0,
+        "rashid_tau_in": 45.0,
+        # In A.19 denominator is alpha*HR0. This keeps the prior 21 bpm scale: alpha=21/60=0.35.
+        "rashid_alpha": 0.35,
+        "rashid_hr0": 60.0,
+        # A.24 direct sink term coefficient.
+        "rashid_beta": 0.08,
+        "rashid_n": 2.0,
+        "rashid_c1": 1.0,
+        "rashid_c2": 1.0,
+
     }
+
+
+def get_base_params() -> ParameterSet:
+    """Return standard parameters for the supported Hovorka model."""
+    return _get_hovorka_base_params()
 
 
 def _sample_truncated_normal(
@@ -82,6 +105,8 @@ def _is_plausible_patient(p: ParameterSet) -> bool:
         return False
 
     if not (40.0 <= p["BW"] <= 180.0):
+        return False
+    if not (_AGE_YEARS_MIN <= p["age_years"] <= _AGE_YEARS_MAX):
         return False
     if not (0.03 <= p["VI"] <= 0.5):
         return False
@@ -174,6 +199,12 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     # Carbohydrate bioavailability: physiological range 0.7–0.9 for T1D adults
     # (upper bound was incorrectly 1.2 = 120% absorption, which is physically impossible)
     p["Ag"] = float(rng.uniform(0.7, 0.9))
+    # Adult T1D cohort assumption: broad outpatient population, not pediatric.
+    # Keep age integer at generation time, but store as float for consistency
+    # with the model parameter container type.
+    sampled_age = int(np.rint(rng.normal(_AGE_YEARS_MEAN, _AGE_YEARS_STD)))
+    clamped_age = max(int(_AGE_YEARS_MIN), min(int(_AGE_YEARS_MAX), sampled_age))
+    p["age_years"] = float(clamped_age)
     # Body weight: constrained male cohort range for this simulation setup.
     p["BW"] = float(rng.uniform(65.0, 95.0))
 
@@ -196,6 +227,7 @@ def generate_monte_carlo_patients(
 
     rng = np.random.default_rng(seed)
     base = get_base_params()
+
     patients: list[ParameterSet] = []
 
     for _ in range(n):

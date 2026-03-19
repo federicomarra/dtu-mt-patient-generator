@@ -1,8 +1,0 @@
-=== Simulation Configuration ===
-
-accepted_patients: 10
-enable_plots: False
-n_days: 3
-parallel_workers: 8
-random_seed: 999
-requested_patients: 10

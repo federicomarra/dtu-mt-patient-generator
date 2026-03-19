@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable
+import importlib
+from typing import Any, Callable, Protocol, cast
 
 import numpy as np
 
@@ -12,6 +13,26 @@ StateVector = list[float]
 StateArray = np.ndarray
 InputValues = tuple[float, float] | tuple[float, float, float]
 InputFunc = Callable[..., InputValues]
+
+
+class _NewtonSolver(Protocol):
+    def __call__(
+        self,
+        func: Callable[[float], float],
+        x0: float,
+        fprime: Callable[[float], float] | None = None,
+        args: tuple[Any, ...] = (),
+        tol: float = 1.48e-8,
+        maxiter: int = 50,
+        fprime2: Callable[[float], float] | None = None,
+        x1: float | None = None,
+        rtol: float = 0.0,
+        full_output: bool = False,
+        disp: bool = True,
+    ) -> float: ...
+
+
+newton = cast(_NewtonSolver, cast(Any, importlib.import_module("scipy.optimize")).newton)
 
 _HOVORKA_BASE_STATE_COUNT = 10
 _HOVORKA_STATE_COUNT = 13
@@ -209,7 +230,7 @@ def hovorka_equations(
     return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2, dE1, dE2, dTE]
 
 
-def compute_initial_state_from_insulin(u_mu: float, params: ParameterSet) -> StateVector:
+def compute_fasting_steady_state_from_basal_insulin(u_mu: float, params: ParameterSet) -> StateVector:
     BW = params["BW"]
     tauI = params["tauI"]
     ke = params["ke"]
@@ -266,7 +287,60 @@ def _convert_target_glucose_to_mmol(
     return target_mmol / (params["MwG"] / 10.0), tolerance
 
 
-def _compute_hovorka_steady_state_from_glucose(
+def _evaluate_steady_state_glucose(us: float, params: ParameterSet) -> tuple[float, StateVector]:
+    x_state = compute_fasting_steady_state_from_basal_insulin(us, params)
+    glucose_mmol = measure_glycemia(tuple(x_state), params)
+    return glucose_mmol, x_state
+
+
+def _estimate_glucose_derivative(us: float, params: ParameterSet) -> float:
+    step = max(1e-4, 1e-2 * us)
+    lower = max(1e-6, us - step)
+    upper = us + step
+    glucose_lower, _ = _evaluate_steady_state_glucose(lower, params)
+    glucose_upper, _ = _evaluate_steady_state_glucose(upper, params)
+    denominator = upper - lower
+    if denominator <= 0.0:
+        return 0.0
+    return (glucose_upper - glucose_lower) / denominator
+
+
+def _find_newton_bracket(
+    params: ParameterSet,
+    target_mmol: float,
+) -> tuple[float, float, float, float, StateVector, StateVector]:
+    pivot = 10.0
+    glucose_pivot, state_pivot = _evaluate_steady_state_glucose(pivot, params)
+
+    if glucose_pivot >= target_mmol:
+        low = pivot
+        glucose_low = glucose_pivot
+        state_low = state_pivot
+        high = pivot * 2.0
+        glucose_high, state_high = _evaluate_steady_state_glucose(high, params)
+        while glucose_high > target_mmol and high < 100.0:
+            low = high
+            glucose_low = glucose_high
+            state_low = state_high
+            high *= 2.0
+            glucose_high, state_high = _evaluate_steady_state_glucose(high, params)
+    else:
+        high = pivot
+        glucose_high = glucose_pivot
+        state_high = state_pivot
+        low = pivot / 2.0
+        glucose_low, state_low = _evaluate_steady_state_glucose(low, params)
+        while glucose_low < target_mmol and low > 1e-6:
+            high = low
+            glucose_high = glucose_low
+            state_high = state_low
+            low = max(1e-6, low / 2.0)
+            glucose_low, state_low = _evaluate_steady_state_glucose(low, params)
+
+    return low, glucose_low, high, glucose_high, state_low, state_high
+
+
+def _compute_hovorka_steady_state_newton(
     params: ParameterSet,
     desired_glycemia: float | tuple[float, float],
     international_units: bool = True,
@@ -274,66 +348,85 @@ def _compute_hovorka_steady_state_from_glucose(
     print_progress: bool = True,
 ) -> StateVector:
     target_mmol, tolerance = _convert_target_glucose_to_mmol(params, desired_glycemia, international_units)
-    min_insulin_amount = 1e-5
-    max_insulin_amount = 50.0
 
     if print_progress:
-        print(f"Computing optimal steady state for glucose: {target_mmol} [mmol/L]")
+        print(f"Computing optimal steady state with Newton's method for glucose: {target_mmol} [mmol/L]")
 
-    def eval_glycemia(us: float) -> tuple[float, StateVector]:
-        x_state = compute_initial_state_from_insulin(us, params)
-        g = measure_glycemia(tuple(x_state), params)
-        return g, x_state
+    (
+        min_insulin_amount,
+        glucose_low,
+        max_insulin_amount,
+        glucose_high,
+        state_low,
+        state_high,
+    ) = _find_newton_bracket(params, target_mmol)
 
-    g_low, x_low = eval_glycemia(min_insulin_amount)
-    g_high, x_high = eval_glycemia(max_insulin_amount)
+    best_state = state_low
+    best_error = abs(glucose_low - target_mmol)
+    if abs(glucose_high - target_mmol) < best_error:
+        best_state = state_high
+        best_error = abs(glucose_high - target_mmol)
 
-    expansions = 0
-    while g_high > target_mmol and expansions < 6:
-        max_insulin_amount *= 2.0
-        g_high, x_high = eval_glycemia(max_insulin_amount)
-        expansions += 1
+    if not (glucose_low >= target_mmol >= glucose_high):
+        return best_state
 
-    if not (g_low >= target_mmol >= g_high):
-        return x_low if abs(g_low - target_mmol) <= abs(g_high - target_mmol) else x_high
+    evaluation_count = 0
 
-    best_x = x_low
-    best_err = abs(g_low - target_mmol)
-    for iteration in range(max_iterations):
-        mid = 0.5 * (min_insulin_amount + max_insulin_amount)
-        g_mid, x_mid = eval_glycemia(mid)
-        err = abs(g_mid - target_mmol)
+    def objective(us: float) -> float:
+        nonlocal best_state, best_error, evaluation_count
+        insulin_amount = float(np.clip(us, min_insulin_amount, max_insulin_amount))
+        glucose_mmol, state = _evaluate_steady_state_glucose(insulin_amount, params)
+        residual = glucose_mmol - target_mmol
+        error = abs(residual)
+        evaluation_count += 1
+
+        if error < best_error:
+            best_error = error
+            best_state = state
 
         if print_progress:
-            print(f"Iteration {iteration + 1}: G= {g_mid:.2f} [mmol/L], I= {mid:.5f} [mU/min]")
+            print(
+                f"Eval {evaluation_count}: G= {glucose_mmol:.4f} [mmol/L], "
+                f"I= {insulin_amount:.6f} [mU/min], residual= {residual:.4f}"
+            )
+        return residual
 
-        if err < best_err:
-            best_err = err
-            best_x = x_mid
-        if err < tolerance:
-            return x_mid
+    def objective_prime(us: float) -> float:
+        insulin_amount = float(np.clip(us, min_insulin_amount, max_insulin_amount))
+        derivative = _estimate_glucose_derivative(insulin_amount, params)
+        if not np.isfinite(derivative):
+            return 0.0
+        return derivative
 
-        if g_mid > target_mmol:
-            min_insulin_amount = mid
-        else:
-            max_insulin_amount = mid
-    return best_x
-
-
-def compute_model_steady_state_from_glucose(
-    params: ParameterSet,
-    desired_glycemia: float | tuple[float, float],
-    international_units: bool = True,
-    max_iterations: int = 100,
-    print_progress: bool = True,
-) -> StateVector:
-    return _compute_hovorka_steady_state_from_glucose(
-        params=params,
-        desired_glycemia=desired_glycemia,
-        international_units=international_units,
-        max_iterations=max_iterations,
-        print_progress=print_progress,
+    initial_guess = float(
+        np.clip(
+            min_insulin_amount
+            + (target_mmol - glucose_low)
+            * (max_insulin_amount - min_insulin_amount)
+            / (glucose_high - glucose_low),
+            min_insulin_amount,
+            max_insulin_amount,
+        )
     )
+    try:
+        insulin_solution = float(
+            newton(
+                func=objective,
+                x0=initial_guess,
+                fprime=objective_prime,
+                tol=tolerance,
+                maxiter=max_iterations,
+            )
+        )
+        glucose_solution, state_solution = _evaluate_steady_state_glucose(
+            float(np.clip(insulin_solution, min_insulin_amount, max_insulin_amount)),
+            params,
+        )
+        if abs(glucose_solution - target_mmol) < best_error:
+            return state_solution
+    except (RuntimeError, OverflowError, ZeroDivisionError):
+        pass
+    return best_state
 
 
 def compute_optimal_steady_state_from_glucose(
@@ -343,7 +436,7 @@ def compute_optimal_steady_state_from_glucose(
     max_iterations: int = 100,
     print_progress: bool = True,
 ) -> StateVector:
-    return compute_model_steady_state_from_glucose(
+    return _compute_hovorka_steady_state_newton(
         params=params,
         desired_glycemia=desired_glycemia,
         international_units=international_units,

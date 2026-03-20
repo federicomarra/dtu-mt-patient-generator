@@ -347,7 +347,11 @@ def _compute_hovorka_steady_state_newton(
     max_iterations: int = 100,
     print_progress: bool = True,
 ) -> StateVector:
-    target_mmol, tolerance = _convert_target_glucose_to_mmol(params, desired_glycemia, international_units)
+    target_mmol, glucose_tolerance_mmol = _convert_target_glucose_to_mmol(
+        params,
+        desired_glycemia,
+        international_units,
+    )
 
     if print_progress:
         print(f"Computing optimal steady state with Newton's method for glucose: {target_mmol} [mmol/L]")
@@ -408,13 +412,19 @@ def _compute_hovorka_steady_state_newton(
             max_insulin_amount,
         )
     )
+
+    # SciPy's Newton `tol` is in root-variable units (here insulin mU/min),
+    # not glucose units. Keep it small and use glucose_tolerance_mmol for
+    # physiological acceptance after solving.
+    insulin_step_tol = 1e-4
+
     try:
         insulin_solution = float(
             newton(
                 func=objective,
                 x0=initial_guess,
                 fprime=objective_prime,
-                tol=tolerance,
+                tol=insulin_step_tol,
                 maxiter=max_iterations,
             )
         )
@@ -422,6 +432,8 @@ def _compute_hovorka_steady_state_newton(
             float(np.clip(insulin_solution, min_insulin_amount, max_insulin_amount)),
             params,
         )
+        if abs(glucose_solution - target_mmol) <= glucose_tolerance_mmol:
+            return state_solution
         if abs(glucose_solution - target_mmol) < best_error:
             return state_solution
     except (RuntimeError, OverflowError, ZeroDivisionError):

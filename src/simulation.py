@@ -135,11 +135,14 @@ def run_simulation(
     accepted_correction_isf_active_points = 0
     accepted_correction_isf_events = 0
     accepted_correction_isf_units = 0.0
-    rejection_bounds_mmol = (4.5, 7.2)
-    instability_max_glucose_mmol = 17.0
-    instability_hyper_pct = 30.0
-    quality_max_hypo_pct = 4.0
-    quality_max_hyper_pct = 12.0
+    rejection_bounds_mmol = (
+        config.initial_glucose_acceptance_min_mmol,
+        config.initial_glucose_acceptance_max_mmol,
+    )
+    instability_max_glucose_mmol = config.instability_max_glucose_mmol
+    instability_hyper_pct = config.instability_hyper_pct_threshold
+    quality_max_hypo_pct = config.quality_max_hypo_pct_threshold
+    quality_max_hyper_pct = config.quality_max_hyper_pct_threshold
 
     if show_summary:
         print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")

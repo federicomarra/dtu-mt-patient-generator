@@ -198,14 +198,22 @@ $$
 
 ### 5.1 Fasting state from basal insulin
 
-Given basal insulin $u_{\mu}$ [mU/min]:
+Given basal insulin $u_{\mu}$ [mU/min], the implementation enforces fasting equilibrium assumptions:
+
+$$
+\dot S_1=\dot S_2=\dot I=\dot x_1=\dot x_2=\dot x_3=\dot D_1=\dot D_2=\dot E_1=\dot E_2=\dot T_E=0,
+\quad
+D_1=D_2=E_1=E_2=T_E=0
+$$
+
+and computes:
 
 $$
 S_{eq} = \tau_I u_{\mu}
 $$
 
 $$
-I_{eq} = \frac{S_{eq}}{k_e\tau_I V_I BW}
+I_{eq} = \frac{S_{eq}}{k_e\tau_I V_I BW} = \frac{u_{\mu}}{k_e V_I BW}
 $$
 
 $$
@@ -234,32 +242,114 @@ x_{1,eq} & -(k_{12}+x_{2,eq})
 \begin{bmatrix}F_{01}^c-EGP_c \\ 0\end{bmatrix}
 $$
 
-### 5.2 Target-glucose solve (SciPy Newton)
-
-Solve for $u$ such that:
+Numerically, if the $2\times2$ system is singular, least-squares is used as fallback, and the final values are clipped to nonnegative:
 
 $$
-f(u) = G_{ss}(u) - G_{target} = 0
+Q_{1,eq}=\max(0,Q_{1,eq}),\quad Q_{2,eq}=\max(0,Q_{2,eq})
 $$
 
-with numerical derivative:
+### 5.2 Target-glucose solve (full multivariate Newton)
+
+The implemented unknown vector is:
 
 $$
-f'(u) \approx \frac{f(u+h)-f(u-h)}{2h}
+z = [x_1,\ldots,x_{13},u]^T
 $$
 
-and $h=\max(10^{-4},10^{-2}u)$ (implemented via lower/upper finite difference).
+where $x=[Q_1,Q_2,S_1,S_2,I,x_1,x_2,x_3,D_1,D_2,E_1,E_2,T_E]$ and $u$ is basal insulin input (mU/min).
 
-Boundary note: near the lower insulin bound, clipping may make this effectively one-sided rather than perfectly centered.
+The nonlinear root system is:
 
-A bracket $(u_{min},u_{max})$ is found first, then Newton is run within clipped bounds.
+$$
+F(z)=
+\begin{bmatrix}
+f_{Hovorka}(x,u,p) \\
+G(x)-G_{target}
+\end{bmatrix}=0
+$$
 
-Tolerance handling (implementation-correct):
+where $f_{Hovorka}(x,u,p)$ is the 13-state ODE right-hand side evaluated at steady-state inputs.
 
-- Newton solver step tolerance is applied in insulin units (root variable), with a small fixed value.
-- Glucose-domain acceptance uses $tol_G=0.1$ mmol/L when target input is already in mmol/L.
-- For mg/dL targets, the input is converted internally via $G_{mmol}=G_{mg/dL}/(M_w^G/10)$ and the corresponding glucose tolerance is converted consistently.
-- After Newton returns, the solution is accepted directly if $|G_{sol}-G_{target}|\le tol_G$; otherwise best-seen residual fallback is used.
+**Notation note on $p$:** $p$ denotes the fixed patient-specific model parameters (e.g. $V_G$, $k_{12}$, $SI_1$, ...). They are written explicitly in $f(x,u,p)$,following standard dynamical-systems convention, to make clear what the function depends on, but they are *not* unknowns of the Newton system. The Newton iteration solves only for $z=[x,u]$; $p$ remains constant throughout.
+
+Steady-state inputs used during the solve:
+
+$$
+D(t)=0,\quad \Delta HR(t)=0
+$$
+
+and $G(x)=Q_1/(V_GBW)$.
+
+Implementation architecture is method-general via pluggable callbacks:
+
+- residual $(z,p)\rightarrow F\in\mathbb{R}^{14}$
+- jacobian $(z,F,p)\rightarrow J\in\mathbb{R}^{14\times14}$
+- project $(z)\rightarrow z_{constrained}$
+- observable $(z,p)\rightarrow G(z)$
+
+where, project(z) is a constraint enforcement callback in the Newton solver that clips the solution vector to physically valid ranges after each iteration.
+
+This keeps the Newton workflow reusable across models (for example, a future UVA/Padova adapter) while using Hovorka-specific callbacks today.
+
+Newton iteration:
+
+$$
+J(z_k)\,\Delta z_k = -F(z_k),\quad z_{k+1}=z_k+\lambda\Delta z_k
+$$
+
+Two Jacobian options are supported conceptually:
+
+Analytical Jacobian:
+
+$$
+J_{ij}(z)=\frac{\partial F_i}{\partial z_j}
+$$
+
+Numerical Jacobian (forward finite differences):
+
+$$
+\frac{\partial F}{\partial z_j}\approx\frac{F(z+h_j e_j)-F(z)}{h_j},
+\quad
+h_j=\max(10^{-6},10^{-4}\max(1,|z_j|))
+$$
+
+Choice for this codebase:
+
+- We use the analytical Jacobian for Hovorka (faster and more stable for a fixed, known model).
+- Numerical Jacobian remains the model-general fallback strategy when model equations are frequently changing or when derivatives are not yet derived.
+
+If $J$ is singular or ill-conditioned, least-squares is used instead of direct solve.
+
+Damping/backtracking factors:
+
+$$
+\lambda \in \{1,0.5,0.25,0.125,0.0625\}
+$$
+
+Acceptance metric:
+
+$$
+\text{score}(z)=\max\left(\lVert f_{Hovorka}(x,u,p)\rVert_\infty,\;|G(x)-G_{target}|\right)
+$$
+
+Update is accepted when trial score decreases.
+
+Constraints during evaluation:
+
+- nonnegative clipping on physiological nonnegative states ($Q_1,Q_2,S_1,S_2,I,D_1,D_2,E_1,E_2,T_E$)
+- insulin clipping: $u\in[10^{-6},200]$
+
+Stopping criteria:
+
+- $\lVert f_{Hovorka}(x,u,p)\rVert_\infty \le 10^{-6}$
+- and $|G(x)-G_{target}|\le tol_G$
+
+with:
+
+- $tol_G=0.1$ mmol/L for mmol/L targets
+- mg/dL targets converted by $G_{mmol}=G_{mg/dL}/(M_w^G/10)$ with consistent tolerance conversion
+
+Initialization uses a deterministic warm start from the fasting algebraic construction at $u=10$ mU/min, then sets initial $Q_1$ from the target glucose relation $Q_1=G_{target}V_GBW$.
 
 ## 6) Scenario And Exercise Sampling Math
 

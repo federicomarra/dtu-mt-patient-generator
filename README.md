@@ -45,7 +45,7 @@ Each patient/day simulation starts from a computed fasting steady state obtained
 
 Current method:
 
-- SciPy Newton root solver (`scipy.optimize.newton`) with bracketing safeguards
+- In-house bounded Newton-Raphson solver with explicit bracketing and damping safeguards
 - target passed from config (`initial_target_glucose_mgdl`)
 
 Important defaults:

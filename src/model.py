@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib
-from typing import Any, Callable, Protocol, cast
+from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
@@ -13,29 +13,22 @@ StateVector = list[float]
 StateArray = np.ndarray
 InputValues = tuple[float, float] | tuple[float, float, float]
 InputFunc = Callable[..., InputValues]
+ResidualCallback = Callable[[np.ndarray, ParameterSet, float], np.ndarray]
+JacobianCallback = Callable[[np.ndarray, np.ndarray, ParameterSet, float], np.ndarray]
+ProjectCallback = Callable[[np.ndarray], np.ndarray]
+ObservableCallback = Callable[[np.ndarray, ParameterSet], float]
 
-
-class _NewtonSolver(Protocol):
-    def __call__(
-        self,
-        func: Callable[[float], float],
-        x0: float,
-        fprime: Callable[[float], float] | None = None,
-        args: tuple[Any, ...] = (),
-        tol: float = 1.48e-8,
-        maxiter: int = 50,
-        fprime2: Callable[[float], float] | None = None,
-        x1: float | None = None,
-        rtol: float = 0.0,
-        full_output: bool = False,
-        disp: bool = True,
-    ) -> float: ...
-
-
-newton = cast(_NewtonSolver, cast(Any, importlib.import_module("scipy.optimize")).newton)
 
 _HOVORKA_BASE_STATE_COUNT = 10
 _HOVORKA_STATE_COUNT = 13
+
+
+@dataclass(frozen=True)
+class _SteadyStateCallbacks:
+    residual: ResidualCallback
+    jacobian: JacobianCallback
+    project: ProjectCallback
+    observable: ObservableCallback
 
 
 def state_listify(
@@ -287,60 +280,340 @@ def _convert_target_glucose_to_mmol(
     return target_mmol / (params["MwG"] / 10.0), tolerance
 
 
-def _evaluate_steady_state_glucose(us: float, params: ParameterSet) -> tuple[float, StateVector]:
-    x_state = compute_fasting_steady_state_from_basal_insulin(us, params)
-    glucose_mmol = measure_glycemia(tuple(x_state), params)
-    return glucose_mmol, x_state
+def _steady_state_input_stub(*_: object, **__: object) -> InputValues:
+    return 0.0, 0.0, 0.0
 
 
-def _estimate_glucose_derivative(us: float, params: ParameterSet) -> float:
-    step = max(1e-4, 1e-2 * us)
-    lower = max(1e-6, us - step)
-    upper = us + step
-    glucose_lower, _ = _evaluate_steady_state_glucose(lower, params)
-    glucose_upper, _ = _evaluate_steady_state_glucose(upper, params)
-    denominator = upper - lower
-    if denominator <= 0.0:
-        return 0.0
-    return (glucose_upper - glucose_lower) / denominator
+def _project_state_and_insulin(state: np.ndarray, insulin_amount: float) -> tuple[np.ndarray, float]:
+    """Enforces box constraints on physiological states and insulin.
+
+    Clips nonnegative states to [0, ∞) and insulin to [1e-6, 200.0] mU/min.
+    Ensures all residual and Jacobian evaluations remain in physically valid domains.
+    """
+    projected_state = np.asarray(state, dtype=np.float64).copy()
+    nonnegative_indices = get_non_negative_state_indices()
+    valid_indices = nonnegative_indices[nonnegative_indices < projected_state.size]
+    projected_state[valid_indices] = np.maximum(projected_state[valid_indices], 0.0)
+    projected_insulin = float(np.clip(insulin_amount, 1e-6, 200.0))
+    return projected_state, projected_insulin
 
 
-def _find_newton_bracket(
+def _project_hovorka_variables(z: np.ndarray) -> np.ndarray:
+    """Adapts _project_state_and_insulin for the combined Newton step vector z = [x, u].
+
+    Unpacks z into state and insulin, projects both, then repacks.
+    Serves as the Newton solver's constraint callback after each iteration and step trial.
+    """
+    projected_z = np.asarray(z, dtype=np.float64).copy()
+    projected_state, projected_insulin = _project_state_and_insulin(projected_z[:-1], float(projected_z[-1]))
+    projected_z[:-1] = projected_state
+    projected_z[-1] = projected_insulin
+    return projected_z
+
+
+def _evaluate_hovorka_steady_state_residual(
+    z: np.ndarray,
     params: ParameterSet,
     target_mmol: float,
-) -> tuple[float, float, float, float, StateVector, StateVector]:
-    pivot = 10.0
-    glucose_pivot, state_pivot = _evaluate_steady_state_glucose(pivot, params)
+) -> np.ndarray:
+    """Evaluates the residual of the Hovorka model equations and the glucose observable
+    for a given combined state and insulin variable vector.
+    The residual consists of the derivatives from the Hovorka equations
+    (which should be zero at steady state)
+    """
+    projected_z = _project_hovorka_variables(z)
+    state = projected_z[:-1]
+    insulin_amount = float(projected_z[-1])
 
-    if glucose_pivot >= target_mmol:
-        low = pivot
-        glucose_low = glucose_pivot
-        state_low = state_pivot
-        high = pivot * 2.0
-        glucose_high, state_high = _evaluate_steady_state_glucose(high, params)
-        while glucose_high > target_mmol and high < 100.0:
-            low = high
-            glucose_low = glucose_high
-            state_low = state_high
-            high *= 2.0
-            glucose_high, state_high = _evaluate_steady_state_glucose(high, params)
+    derivatives = np.asarray(
+        hovorka_equations(
+            t=0,
+            x=state,
+            params=params,
+            input_func=_steady_state_input_stub,
+            scenario=1,
+            precomputed_inputs=(insulin_amount, 0.0, 0.0),
+        ),
+        dtype=np.float64,
+    )
+    glucose_residual = _hovorka_observable(projected_z, params) - target_mmol
+
+    residual = np.empty(state.size + 1, dtype=np.float64)
+    residual[:-1] = derivatives
+    residual[-1] = glucose_residual
+    return residual
+
+
+def _hovorka_observable(z: np.ndarray, params: ParameterSet) -> float:
+    """Calculates the glucose observable for a given combined state and insulin variable vector."""
+    projected_z = _project_hovorka_variables(z)
+    state = projected_z[:-1]
+    return measure_glycemia(tuple(float(v) for v in state), params)
+
+
+def _estimate_numerical_jacobian(
+    residual_callback: ResidualCallback,
+    z: np.ndarray,
+    base_residual: np.ndarray,
+    params: ParameterSet,
+    target_mmol: float,
+) -> np.ndarray:
+    variable_count = z.size
+    jacobian = np.zeros((variable_count, variable_count), dtype=np.float64)
+
+    for variable_index in range(variable_count):
+        perturbation = max(1e-6, 1e-4 * max(1.0, abs(float(z[variable_index]))))
+        z_perturbed = z.copy()
+        z_perturbed[variable_index] += perturbation
+        residual_perturbed = residual_callback(z_perturbed, params, target_mmol)
+        jacobian[:, variable_index] = (residual_perturbed - base_residual) / perturbation
+
+    return jacobian
+
+
+def _compute_hovorka_analytical_jacobian(
+    z: np.ndarray,
+    _: np.ndarray,
+    params: ParameterSet,
+    __: float,
+) -> np.ndarray:
+    projected_z = _project_hovorka_variables(z)
+    state = projected_z[:-1]
+
+    q1, q2, _s1, _s2, _i, x1, x2, x3, _d1, _d2, e1, e2, te = state_unlistify(list(float(v) for v in state))
+
+    bw = float(params["BW"])
+    vg = float(params["VG"])
+    vi = float(params["VI"])
+    tau_i = float(params["tauI"])
+    tau_g = float(params["tauG"])
+    ke = float(params["ke"])
+    ka1 = float(params["ka1"])
+    ka2 = float(params["ka2"])
+    ka3 = float(params["ka3"])
+    si1 = float(params["SI1"])
+    si2 = float(params["SI2"])
+    si3 = float(params["SI3"])
+    k12 = float(params["k12"])
+    egp0 = float(params["EGP0"])
+    f01 = float(params["F01"])
+
+    tau_hr = max(1.0, float(params["rashid_tau_hr"]))
+    tau_ex = max(1.0, float(params["rashid_tau_ex"]))
+    tau_in = max(1.0, float(params["rashid_tau_in"]))
+    c1 = float(params["rashid_c1"])
+    c2 = float(params["rashid_c2"])
+    alpha_ex = max(1e-6, float(params["rashid_alpha"]))
+    beta = max(0.0, float(params["rashid_beta"]))
+    hr0 = max(1e-6, float(params["rashid_hr0"]))
+    n = max(1.0, float(params["rashid_n"]))
+
+    vg_bw = vg * bw
+    inv_tau_i = 1.0 / tau_i
+    inv_tau_g = 1.0 / tau_g
+    inv_vi_bw = 1.0 / (vi * bw)
+
+    glucose = q1 / vg_bw if vg_bw > 0.0 else 0.0
+
+    if glucose >= 4.5:
+        d_f01c_d_q1 = 0.0
     else:
-        high = pivot
-        glucose_high = glucose_pivot
-        state_high = state_pivot
-        low = pivot / 2.0
-        glucose_low, state_low = _evaluate_steady_state_glucose(low, params)
-        while glucose_low < target_mmol and low > 1e-6:
-            high = low
-            glucose_high = glucose_low
-            state_high = state_low
-            low = max(1e-6, low / 2.0)
-            glucose_low, state_low = _evaluate_steady_state_glucose(low, params)
+        d_f01c_d_q1 = f01 / (4.5 * vg)
 
-    return low, glucose_low, high, glucose_high, state_low, state_high
+    d_fr_d_q1 = 0.003 if glucose >= 9.0 else 0.0
+    d_egpc_d_x3 = -egp0 * bw if x3 < 1.0 else 0.0
+
+    e1_scale = max(1e-6, alpha_ex * hr0)
+    e1_ratio = max(0.0, e1) / e1_scale
+    f_e1_num = e1_ratio**n
+    if e1 > 0.0:
+        d_f_e1_num_d_e1 = n * (e1_ratio ** (n - 1.0)) / e1_scale
+        d_f_e1_d_e1 = d_f_e1_num_d_e1 / ((1.0 + f_e1_num) ** 2)
+    else:
+        d_f_e1_d_e1 = 0.0
+
+    f_e1 = f_e1_num / (1.0 + f_e1_num)
+
+    te_safe = max(1e-6, te)
+    d_te_safe_d_te = 1.0 if te > 1e-6 else 0.0
+    c_sum_safe = max(1e-6, c1 + c2)
+
+    a_term = (f_e1 / tau_in) + (1.0 / te_safe)
+    d_a_term_d_e1 = d_f_e1_d_e1 / tau_in
+    d_a_term_d_te = (-1.0 / (te_safe**2)) * d_te_safe_d_te
+    d_b_term_d_e1 = (te_safe / c_sum_safe) * d_f_e1_d_e1
+    d_b_term_d_te = (f_e1 / c_sum_safe) * d_te_safe_d_te
+
+    d_d_e2_d_e1 = -(d_a_term_d_e1 * e2) + d_b_term_d_e1
+    d_d_e2_d_te = -(d_a_term_d_te * e2) + d_b_term_d_te
+    d_d_e2_d_e2 = -a_term
+
+    # Match Rashid term clipping so Jacobian follows the projected residual model.
+    e2_pos = max(0.0, e2)
+    x1_pos = max(0.0, x1)
+    x2_pos = max(0.0, x2)
+    q1_pos = max(0.0, q1)
+    q2_pos = max(0.0, q2)
+
+    d_qe1_d_e1 = beta / hr0 if e1 > 0.0 else 0.0
+
+    d_qe21_d_q1 = alpha_ex * (e2_pos**2) * x1_pos if q1 > 0.0 else 0.0
+    d_qe21_d_x1 = alpha_ex * (e2_pos**2) * q1_pos if x1 > 0.0 else 0.0
+    d_qe21_d_e2 = 2.0 * alpha_ex * e2_pos * x1_pos * q1_pos if e2 > 0.0 else 0.0
+
+    d_qe22_d_q2 = alpha_ex * (e2_pos**2) * x2_pos if q2 > 0.0 else 0.0
+    d_qe22_d_x2 = alpha_ex * (e2_pos**2) * q2_pos if x2 > 0.0 else 0.0
+    d_qe22_d_e2 = 2.0 * alpha_ex * e2_pos * x2_pos * q2_pos if e2 > 0.0 else 0.0
+
+    jacobian = np.zeros((14, 14), dtype=np.float64)
+
+    idx_q1, idx_q2 = 0, 1
+    idx_s1, idx_s2 = 2, 3
+    idx_i = 4
+    idx_x1, idx_x2, idx_x3 = 5, 6, 7
+    idx_d1, idx_d2 = 8, 9
+    idx_e1, idx_e2, idx_te = 10, 11, 12
+    idx_u = 13
+
+    # dQ1 row
+    jacobian[0, idx_q1] = -x1 - d_f01c_d_q1 - d_fr_d_q1 - d_qe21_d_q1
+    jacobian[0, idx_q2] = k12
+    jacobian[0, idx_x1] = -q1 - d_qe21_d_x1
+    jacobian[0, idx_x3] = d_egpc_d_x3
+    jacobian[0, idx_d2] = inv_tau_g
+    jacobian[0, idx_e2] = -d_qe21_d_e2
+
+    # dQ2 row
+    jacobian[1, idx_q1] = x1 + d_qe21_d_q1
+    jacobian[1, idx_q2] = -k12 - x2 - d_qe22_d_q2
+    jacobian[1, idx_x1] = q1 + d_qe21_d_x1
+    jacobian[1, idx_x2] = -q2 - d_qe22_d_x2
+    jacobian[1, idx_e1] = -d_qe1_d_e1
+    jacobian[1, idx_e2] = d_qe21_d_e2 - d_qe22_d_e2
+
+    # dS1, dS2, dI rows
+    jacobian[2, idx_s1] = -inv_tau_i
+    jacobian[2, idx_u] = 1.0
+    jacobian[3, idx_s1] = inv_tau_i
+    jacobian[3, idx_s2] = -inv_tau_i
+    jacobian[4, idx_s2] = inv_tau_i * inv_vi_bw
+    jacobian[4, idx_i] = -ke
+
+    # dx1, dx2, dx3 rows
+    jacobian[5, idx_i] = si1 * ka1
+    jacobian[5, idx_x1] = -ka1
+    jacobian[6, idx_i] = si2 * ka2
+    jacobian[6, idx_x2] = -ka2
+    jacobian[7, idx_i] = si3 * ka3
+    jacobian[7, idx_x3] = -ka3
+
+    # dD1, dD2 rows
+    jacobian[8, idx_d1] = -inv_tau_g
+    jacobian[9, idx_d1] = inv_tau_g
+    jacobian[9, idx_d2] = -inv_tau_g
+
+    # dE1, dE2, dTE rows
+    jacobian[10, idx_e1] = -1.0 / tau_hr
+    jacobian[11, idx_e1] = d_d_e2_d_e1
+    jacobian[11, idx_e2] = d_d_e2_d_e2
+    jacobian[11, idx_te] = d_d_e2_d_te
+    jacobian[12, idx_e1] = (c1 / tau_ex) * d_f_e1_d_e1
+    jacobian[12, idx_te] = -1.0 / tau_ex
+
+    # Glucose residual row: G(x,p) - target
+    jacobian[13, idx_q1] = 1.0 / vg_bw
+    return jacobian
 
 
-def _compute_hovorka_steady_state_newton(
+def _build_hovorka_steady_state_callbacks() -> _SteadyStateCallbacks:
+    return _SteadyStateCallbacks(
+        residual=_evaluate_hovorka_steady_state_residual,
+        jacobian=_compute_hovorka_analytical_jacobian,
+        project=_project_hovorka_variables,
+        observable=_hovorka_observable,
+    )
+
+
+def _solve_multivariate_steady_state_newton(
+    callbacks: _SteadyStateCallbacks,
+    params: ParameterSet,
+    target_mmol: float,
+    warm_start_z: np.ndarray,
+    glucose_tolerance_mmol: float,
+    max_iterations: int,
+    print_progress: bool,
+    label: str,
+) -> np.ndarray:
+    z = callbacks.project(np.asarray(warm_start_z, dtype=np.float64))
+    best_z = z.copy()
+    best_score = float("inf")
+    state_residual_tolerance = 1e-6
+    eval_count = 0
+
+    if print_progress:
+        print(f"Computing optimal steady state with multivariate Newton ({label}) for glucose: {target_mmol} [mmol/L]")
+
+    for iteration in range(1, max_iterations + 1):
+        residual = callbacks.residual(z, params, target_mmol)
+        eval_count += 1
+        z = callbacks.project(z)
+
+        state_residual_inf = float(np.linalg.norm(residual[:-1], ord=np.inf))
+        glucose_residual_abs = abs(float(residual[-1]))
+        score = max(state_residual_inf, glucose_residual_abs)
+
+        if score < best_score:
+            best_score = score
+            best_z = z.copy()
+
+        if print_progress:
+            print(
+                f"Iter {iteration:02d} (eval {eval_count}): "
+                f"G= {callbacks.observable(z, params):.4f} [mmol/L], "
+                f"I= {float(z[-1]):.6f} [mU/min], "
+                f"||F_state||_inf= {state_residual_inf:.3e}, "
+                f"|F_glucose|= {glucose_residual_abs:.3e}"
+            )
+
+        if glucose_residual_abs <= glucose_tolerance_mmol and state_residual_inf <= state_residual_tolerance:
+            return z
+
+        jacobian = callbacks.jacobian(z, residual, params, target_mmol)
+        # Rare safeguard for unstable analytical derivatives near non-smooth branch points.
+        if not np.all(np.isfinite(jacobian)):
+            jacobian = _estimate_numerical_jacobian(callbacks.residual, z, residual, params, target_mmol)
+
+        try:
+            step = np.linalg.solve(jacobian, -residual)
+        except np.linalg.LinAlgError:
+            step, *_ = np.linalg.lstsq(jacobian, -residual, rcond=None)
+
+        accepted = False
+        for damping in (1.0, 0.5, 0.25, 0.125, 0.0625):
+            z_trial = callbacks.project(z + damping * step)
+            trial_residual = callbacks.residual(z_trial, params, target_mmol)
+            eval_count += 1
+
+            trial_state_residual_inf = float(np.linalg.norm(trial_residual[:-1], ord=np.inf))
+            trial_glucose_residual_abs = abs(float(trial_residual[-1]))
+            trial_score = max(trial_state_residual_inf, trial_glucose_residual_abs)
+
+            if trial_score < best_score:
+                best_score = trial_score
+                best_z = z_trial.copy()
+
+            if trial_score <= score:
+                z = z_trial
+                accepted = True
+                break
+
+        if not accepted:
+            break
+
+    return best_z
+
+
+def _compute_hovorka_steady_state_multivariate_newton(
     params: ParameterSet,
     desired_glycemia: float | tuple[float, float],
     international_units: bool = True,
@@ -353,92 +626,23 @@ def _compute_hovorka_steady_state_newton(
         international_units,
     )
 
-    if print_progress:
-        print(f"Computing optimal steady state with Newton's method for glucose: {target_mmol} [mmol/L]")
+    warm_start_insulin = 10.0
+    warm_start_state = compute_fasting_steady_state_from_basal_insulin(warm_start_insulin, params)
+    warm_start_state[0] = max(0.0, target_mmol * float(params["VG"]) * float(params["BW"]))
 
-    (
-        min_insulin_amount,
-        glucose_low,
-        max_insulin_amount,
-        glucose_high,
-        state_low,
-        state_high,
-    ) = _find_newton_bracket(params, target_mmol)
-
-    best_state = state_low
-    best_error = abs(glucose_low - target_mmol)
-    if abs(glucose_high - target_mmol) < best_error:
-        best_state = state_high
-        best_error = abs(glucose_high - target_mmol)
-
-    if not (glucose_low >= target_mmol >= glucose_high):
-        return best_state
-
-    evaluation_count = 0
-
-    def objective(us: float) -> float:
-        nonlocal best_state, best_error, evaluation_count
-        insulin_amount = float(np.clip(us, min_insulin_amount, max_insulin_amount))
-        glucose_mmol, state = _evaluate_steady_state_glucose(insulin_amount, params)
-        residual = glucose_mmol - target_mmol
-        error = abs(residual)
-        evaluation_count += 1
-
-        if error < best_error:
-            best_error = error
-            best_state = state
-
-        if print_progress:
-            print(
-                f"Eval {evaluation_count}: G= {glucose_mmol:.4f} [mmol/L], "
-                f"I= {insulin_amount:.6f} [mU/min], residual= {residual:.4f}"
-            )
-        return residual
-
-    def objective_prime(us: float) -> float:
-        insulin_amount = float(np.clip(us, min_insulin_amount, max_insulin_amount))
-        derivative = _estimate_glucose_derivative(insulin_amount, params)
-        if not np.isfinite(derivative):
-            return 0.0
-        return derivative
-
-    initial_guess = float(
-        np.clip(
-            min_insulin_amount
-            + (target_mmol - glucose_low)
-            * (max_insulin_amount - min_insulin_amount)
-            / (glucose_high - glucose_low),
-            min_insulin_amount,
-            max_insulin_amount,
-        )
+    warm_start_z = np.asarray([*warm_start_state, warm_start_insulin], dtype=np.float64)
+    callbacks = _build_hovorka_steady_state_callbacks()
+    solved_z = _solve_multivariate_steady_state_newton(
+        callbacks=callbacks,
+        params=params,
+        target_mmol=target_mmol,
+        warm_start_z=warm_start_z,
+        glucose_tolerance_mmol=glucose_tolerance_mmol,
+        max_iterations=max_iterations,
+        print_progress=print_progress,
+        label="Hovorka analytical Jacobian",
     )
-
-    # SciPy's Newton `tol` is in root-variable units (here insulin mU/min),
-    # not glucose units. Keep it small and use glucose_tolerance_mmol for
-    # physiological acceptance after solving.
-    insulin_step_tol = 1e-4
-
-    try:
-        insulin_solution = float(
-            newton(
-                func=objective,
-                x0=initial_guess,
-                fprime=objective_prime,
-                tol=insulin_step_tol,
-                maxiter=max_iterations,
-            )
-        )
-        glucose_solution, state_solution = _evaluate_steady_state_glucose(
-            float(np.clip(insulin_solution, min_insulin_amount, max_insulin_amount)),
-            params,
-        )
-        if abs(glucose_solution - target_mmol) <= glucose_tolerance_mmol:
-            return state_solution
-        if abs(glucose_solution - target_mmol) < best_error:
-            return state_solution
-    except (RuntimeError, OverflowError, ZeroDivisionError):
-        pass
-    return best_state
+    return [float(v) for v in solved_z[:-1]]
 
 
 def compute_optimal_steady_state_from_glucose(
@@ -448,7 +652,7 @@ def compute_optimal_steady_state_from_glucose(
     max_iterations: int = 100,
     print_progress: bool = True,
 ) -> StateVector:
-    return _compute_hovorka_steady_state_newton(
+    return _compute_hovorka_steady_state_multivariate_newton(
         params=params,
         desired_glycemia=desired_glycemia,
         international_units=international_units,

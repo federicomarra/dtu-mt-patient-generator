@@ -806,6 +806,13 @@ def scenario_inputs(
 # Caching Wrapper for Determinism
 # ============================================================================
 
+# WARNING — process-global caches. Safe for mp.Pool (each worker gets its own
+# memory copy) and for sequential run_simulation calls (clear_meal_cache() is
+# called at the top of every run). NOT safe for thread-based parallelism
+# (ThreadPoolExecutor) or direct calls to scenario_with_cached_meals outside
+# of run_simulation — in those cases caches bleed across runs and produce
+# non-reproducible results even with a fixed seed. If thread-based parallelism
+# is ever needed, move these into a per-simulation context object.
 _patient_baseline_cache: dict[tuple[int, int], MealSchedule] = {}
 _meal_cache: dict[tuple[int, int, int], MealSchedule] = {}
 _exercise_cache: dict[tuple[int, int, int], ExerciseSchedule] = {}

@@ -127,15 +127,16 @@ Candidates are sampled from `generate_monte_carlo_patients(...)` and filtered.
 Stages:
 
 1. Initial-state rejection
-   - initial glucose must be inside:
-     - `initial_glucose_acceptance_min_mmol`
-     - `initial_glucose_acceptance_max_mmol`
+   - initial glucose must be in `[initial_glucose_acceptance_min_mmol, initial_glucose_acceptance_max_mmol]`
 2. Instability rejection
    - max glucose and hyper % must pass instability thresholds
-3. Quality rejection
-   - hypo % and hyper % must pass quality thresholds
+3. Quality rejection — evaluated **per day**, not over the full horizon
+   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 8%)
+   - all other days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 4%)
+   - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 12%)
+   - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 3.0 mmol/L) rejects the patient
 
-All thresholds are now config-driven from `SimulationConfig`.
+All thresholds are config-driven from `SimulationConfig`.
 
 ## Configuration
 
@@ -151,12 +152,11 @@ Key groups:
   - `solver_method`, `solver_max_step`, `derivative_clip`
 - Initialization and filtering:
   - `initial_target_glucose_mgdl`
-  - `initial_glucose_acceptance_min_mmol`
-  - `initial_glucose_acceptance_max_mmol`
-  - `instability_max_glucose_mmol`
-  - `instability_hyper_pct_threshold`
-  - `quality_max_hypo_pct_threshold`
-  - `quality_max_hyper_pct_threshold`
+  - `initial_glucose_acceptance_min_mmol`, `initial_glucose_acceptance_max_mmol`
+  - `instability_max_glucose_mmol`, `instability_hyper_pct_threshold`
+  - `quality_max_hypo_pct_threshold`, `quality_max_hypo_pct_exercise_threshold`
+  - `quality_max_hyper_pct_threshold`, `quality_min_glucose_mmol`
+  - `n_warmup_days` (burn-in days before recording; lets ETH Z-state reach cyclic steady state)
 - Basal and calibration:
   - `basal_hourly`, `use_calibrated_basal`
   - `init_insulin_carbo_ratio`, `init_insulin_sensitivity_factor`
@@ -240,7 +240,7 @@ python test/test_simulation.py --patients 10 --days 3 --random-scenarios
 Run steady-state Newton check:
 
 ```bash
-python test/test_model_steady_state.py
+python test/test_steady_state.py
 ```
 
 ## Current Project Structure
@@ -267,7 +267,7 @@ dtu-mt-patient-generator/
 │   └── simulation_utils.py
 └── test/
     ├── test_library_parallel.py
-    ├── test_model_steady_state.py
+    ├── test_steady_state.py
     ├── test_sensitivity.py
     └── test_simulation.py
 ```

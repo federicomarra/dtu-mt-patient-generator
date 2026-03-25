@@ -657,14 +657,6 @@ def get_glucose_trace_from_trajectory(
     return np.asarray(state_trajectory[0, :effective], dtype=np.float64) / vg_bw
 
 
-def estimate_iob_from_state_vector(state: StateVector | StateArray) -> float:
-    return max(0.0, float(state[2]) + float(state[3])) / 1000.0
-
-
-def estimate_iob_from_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
-    return np.maximum(np.asarray(state_trajectory[2, :] + state_trajectory[3, :], dtype=np.float64), 0.0) / 1000.0
-
-
 def estimate_basal_input_from_state(
     state: StateVector | StateArray,
     params: ParameterSet,

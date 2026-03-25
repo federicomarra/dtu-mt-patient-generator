@@ -42,19 +42,34 @@ def _get_hovorka_base_params() -> ParameterSet:
         "Ag": 0.7943,  # [1] glucose absorption rate
         "BW": 80.0,  # [kg] body weight
         "age_years": 35.0,  # [years] adult T1D reference cohort center
-        # Rashid-Hovorka exercise parameters (HR-driven states E1/E2/TE).
-        "rashid_tau_hr": 5.0,
-        "rashid_tau_ex": 120.0,
-        "rashid_tau_in": 45.0,
-        # In A.19 denominator is alpha*HR0. This keeps the prior 21 bpm scale: alpha=21/60=0.35.
-        "rashid_alpha": 0.35,
-        "rashid_hr0": 60.0,
-        # A.24 direct sink term coefficient.
-        "rashid_beta": 0.08,
-        "rashid_n": 2.0,
-        "rashid_c1": 1.0,
-        "rashid_c2": 1.0,
-
+        # -----------------------------------------------------------------------
+        # ETH Deichmann exercise parameters (Deichmann et al., PLOS CB 2023).
+        # AC-driven states: Y, Z, rGU, rGP, tPA, PAint, rdepl, th.
+        # Source: gitlab.com/csb.ethz/t1d-exercise-model
+        #
+        # Aerobic parameters (T1D-validated, from 5 Basel children + T1D variants):
+        "eth_tau_AC":  5.0,       # [min] AC → Y time constant (fixed across all patients)
+        "eth_tau_Z":   600.0,     # [min] post-exercise SI decay (~10h, fixed)
+        "eth_b":       3.0e-6,    # [1/(count·min)] Z drive; mean of patient1-5 + V1 values
+        "eth_q1":      1.0e-6,    # [1/(count·min²)] rGU drive; mean of T1D patients
+        "eth_q2":      0.10,      # [1/min] rGU decay; mean of T1D patients
+        "eth_q3l":     3.0e-7,    # rGP aerobic drive; mean of T1D patients
+        "eth_q4l":     0.060,     # [1/min] rGP aerobic decay; mean of T1D patients
+        "eth_adepl":   0.0108,    # [min/count] glycogen depletion slope (fixed)
+        "eth_bdepl":   180.6,     # [count·min] glycogen depletion intercept (fixed)
+        "eth_aY":      1500.0,    # [count·min] fY half-saturation (fixed)
+        "eth_aAC":     1000.0,    # [count] fAC half-saturation (fixed)
+        "eth_ah":      5600.0,    # [count] high-intensity threshold (fixed)
+        "eth_n1":      20.0,      # [-] fY Hill coefficient (fixed)
+        "eth_n2":      100.0,     # [-] fAC/fHI Hill coefficient (fixed)
+        "eth_tp":      2.0,       # [min] fp half-saturation (fixed)
+        "eth_alpha":   0.27,      # scaling constant (fixed across patients)
+        # Anaerobic parameters — EXPERIMENTAL (not validated on T1D patients).
+        # Values from params_standard.csv; partially supported by params_T1D-V3.
+        "eth_q3h":     1.17e-6,   # rGP anaerobic drive (EXPERIMENTAL)
+        "eth_q4h":     0.0705,    # [1/min] rGP anaerobic decay (EXPERIMENTAL)
+        "eth_q5":      0.03,      # [1/min] th decay rate (EXPERIMENTAL)
+        "eth_q6":      0.0,       # [1/min] glycogen depletion rate (0 = aerobic-only)
     }
 
 
@@ -207,6 +222,17 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     p["age_years"] = float(clamped_age)
     # Body weight: constrained male cohort range for this simulation setup.
     p["BW"] = float(rng.uniform(65.0, 95.0))
+
+    # ETH exercise parameter sampling — aerobic only (T1D-validated variability).
+    # Distributions derived from params_T1D-V1/V2/V3 and params_patient1-5.
+    # Fixed structural parameters (tau_AC, tau_Z, adepl, bdepl, aY, aAC, ah, n1, n2, tp, alpha)
+    # are not sampled — they are consistent across all T1D patient files.
+    p["eth_b"]   = _sample_truncated_normal(rng, 3.0e-6, 1.0e-6, lower=1e-9)   # Z drive coefficient
+    p["eth_q1"]  = _sample_truncated_normal(rng, 1.0e-6, 8.0e-7, lower=1e-9)   # rGU drive
+    p["eth_q2"]  = _sample_truncated_normal(rng, 0.10,   0.08,   lower=1e-4)    # rGU decay
+    p["eth_q3l"] = _sample_truncated_normal(rng, 3.0e-7, 1.5e-7, lower=1e-10)  # rGP aerobic drive
+    p["eth_q4l"] = _sample_truncated_normal(rng, 0.060,  0.018,  lower=1e-4)    # rGP aerobic decay
+    # Anaerobic params are fixed (EXPERIMENTAL) — not sampled per patient.
 
     return p
 

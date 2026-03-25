@@ -1,6 +1,6 @@
 # Type 1 Diabetes Monte Carlo Simulator
 
-A virtual-patient simulator for Type 1 Diabetes based on the Hovorka model, extended with an exercise-driven Rashid-Hovorka component.
+A virtual-patient simulator for Type 1 Diabetes based on the Hovorka model, extended with the ETH Deichmann accelerometer-driven exercise model (Deichmann et al., PLOS Comput Biol 2023).
 
 The project is designed for:
 
@@ -12,9 +12,10 @@ The project is designed for:
 ## Highlights
 
 - Hovorka glucose-insulin ODE simulation with minute-level inputs
-- Exercise extension with HR-driven states (`E1`, `E2`, `TE`)
+- ETH Deichmann exercise extension: 8 AC-driven states (`Y`, `Z`, `rGU`, `rGP`, `tPA`, `PAint`, `rdepl`, `th`) with glycogen depletion and post-exercise insulin sensitivity decay
 - Monte Carlo patient generation from physiological distributions
-- Deterministic daily meal schedules with per-day jitter and anomalies
+- 9 deterministic daily scenarios with per-day jitter: 3 baseline + 3 meal anomalies + 3 exercise anomalies
+- Ground-truth ML labels exported per day (`scenario_id`, `missed_meal_id`, `late_bolus_id`)
 - Weighted scenario sampling (common days vs rarer anomaly days)
 - Safety/control stack:
   - hypo guard (basal suspension logic)
@@ -29,10 +30,10 @@ The project is designed for:
 
 ### Core dynamics
 
-The simulator integrates a 13-state model:
+The simulator integrates an 18-state model:
 
 - 10 classic Hovorka states (glucose, insulin compartments, insulin action, gut absorption)
-- 3 exercise states (`E1`, `E2`, `TE`) coupled into glucose dynamics via `QE1`, `QE21`, `QE22`
+- 8 ETH Deichmann exercise states (`Y`, `Z`, `rGU`, `rGP`, `tPA`, `PAint`, `rdepl`, `th`) coupled into glucose dynamics via three Q1 interaction terms: exercise uptake, exercise EGP, and post-exercise insulin sensitivity boost
 
 Implementation:
 
@@ -71,25 +72,37 @@ with configurable timing/carb windows and deterministic cache behavior per patie
 
 ### Scenarios
 
-`N_SCENARIOS = 6`
+`N_SCENARIOS = 9`
 
-- `1`: normal day
-- `2`: active day (planned afternoon exercise)
-- `3`: sedentary day
-- `4`: long lunch disturbance
-- `5`: missed bolus disturbance
-- `6`: late bolus disturbance
+**Baseline:**
+
+- `1`: normal day (incidental AC baseline)
+- `2`: active day (moderate aerobic session, 30–75 min, 1200–2000 AC)
+- `3`: sedentary day (minimal AC)
+
+**Meal anomalies:**
+
+- `4`: long lunch (extended absorption)
+- `5`: missed bolus (one meal bolus omitted)
+- `6`: late bolus (bolus at meal time instead of pre-meal)
+
+**Exercise anomalies:**
+
+- `7`: prolonged aerobic (60–90 min, 1500–2500 AC; triggers glycogen depletion)
+- `8`: anaerobic/resistance (30–60 min, 6000–9000 AC; EXPERIMENTAL parameters)
+- `9`: exercise + missed bolus (compound anomaly)
 
 ### Weighted scenario sampling
 
 When `random_scenarios=True`, scenario draws are weighted with `SCENARIO_WEIGHTS`:
 
-- scenarios `1-3`: common
-- scenarios `4-6`: intentionally rarer for anomaly realism
+- scenarios `1-3`: ~25% each (common)
+- scenarios `4-6`: ~5% each (meal anomalies)
+- scenarios `7-8`: ~4% each, scenario `9`: ~2% (exercise anomalies, rarer)
 
 ### Exercise-meal overlap policy
 
-For scenario 2:
+For exercise scenarios (2, 7, 8, 9):
 
 - majority of days enforce clean temporal separation from snack/dinner windows
 - minority of days allow controlled overlap as realistic outliers
@@ -170,12 +183,10 @@ Files:
 
 Data columns include:
 
-- `patient_id`
-- `patient_age_years`
+- `patient_id`, `patient_age_years`
 - `day`, `minute`, `absolute_minute`, `time`
-- `blood_glucose`
-- `insulin_mU_min`
-- `cho_mg_min`
+- `blood_glucose`, `insulin_mU_min`, `cho_mg_min`
+- `scenario_id`, `missed_meal_id`, `late_bolus_id` (ground-truth ML labels)
 
 ## Analysis Tooling
 
@@ -270,7 +281,7 @@ dtu-mt-patient-generator/
 ## References
 
 - Hovorka, R. et al. (2004). Nonlinear model predictive control of glucose concentration in subjects with type 1 diabetes.
-- Rashid, M. et al. Exercise model extension for the Hovorka glucose-insulin framework (HR-driven exercise states and glucose-utilisation coupling).
+- Deichmann, J. et al. (2023). A physiological model of the effect of physical activity on the glucose-insulin system for people with type 1 diabetes. PLOS Computational Biology.
 - Boiroux, D. (2012). Model Predictive Control for Type 1 Diabetes (PhD thesis, DTU).
 - Dalla Man, C., Rizza, R. A., Cobelli, C. (2007). Meal simulation model of glucose-insulin system.
 - Wilinska, M. E. et al. (2010). Simulation environment for closed-loop insulin delivery evaluation.

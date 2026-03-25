@@ -18,7 +18,7 @@ Primary implementation sources:
 The integrated state is:
 
 $$
-x = [Q_1, Q_2, S_1, S_2, I, x_1, x_2, x_3, D_1, D_2, E_1, E_2, TE]
+x = [Q_1, Q_2, S_1, S_2, I, x_1, x_2, x_3, D_1, D_2, Y, Z, rGU, rGP, tPA, PAint, rdepl, th]
 $$
 
 where:
@@ -28,7 +28,14 @@ where:
 - $I$: plasma insulin concentration [mU/L]
 - $x_1, x_2, x_3$: insulin action states
 - $D_1, D_2$: gut glucose compartments [mmol]
-- $E_1, E_2, TE$: exercise states (Rashid extension)
+- $Y$: short-term PA insulin sensitivity accumulator [count·min]
+- $Z$: long-term post-exercise SI elevation [count·min]
+- $rGU$: exercise glucose utilization rate [1/min]
+- $rGP$: exercise glucose production rate [1/min]
+- $tPA$: PA tracking state (1=active, 0=rest) [-]
+- $PAint$: cumulative PA intensity integral [count·min]
+- $rdepl$: glycogen depletion rate [1/min]
+- $th$: high-intensity duration accumulator (drives aerobic→anaerobic transition) [-]
 
 ## 2) Input Channels
 
@@ -36,7 +43,7 @@ Per minute, the input layer provides:
 
 - $U(t)$: insulin delivery [mU/min]
 - $D_{mg}(t)$: carbohydrate intake [mg/min]
-- $\Delta HR(t)$: exercise intensity surrogate [bpm above rest]
+- $AC(t)$: accelerometer counts [count/min] — exercise intensity input to the ETH model
 
 Carbohydrate conversion used in model:
 
@@ -144,54 +151,99 @@ $$
 EGP_c = EGP_0 \cdot BW \cdot \max(0, 1 - x_3)
 $$
 
-## 4) Exercise Extension (Rashid-Hovorka)
+## 4) Exercise Extension (ETH Deichmann)
 
-Using $HR(t)=HR_0+\max(0,\Delta HR(t))$:
+Based on: Deichmann et al., PLOS Comput Biol 2023. T1D-validated on aerobic parameters (5 Basel children). Anaerobic parameters (marked EXPERIMENTAL) use population values from params_standard.csv.
 
-$$
-\dot E_1 = \frac{HR(t)-HR_0-E_1}{\tau_{HR}}
-$$
+Input: $AC(t)$ — accelerometer counts at minute $t$.
 
-Define:
+### 4.1 Sigmoidal transfer functions
 
 $$
-r = \frac{\max(0,E_1)}{\alpha HR_0},
-\quad
-f_{E1} = \frac{r^n}{1+r^n}
-$$
-
-Then:
-
-$$
-\dot{TE} = \frac{c_1 f_{E1} + c_2 - TE}{\tau_{ex}}
+f_Y = \frac{(Y/a_Y)^{n_1}}{1+(Y/a_Y)^{n_1}}, \quad
+f_{AC} = \frac{(AC/a_{AC})^{n_2}}{1+(AC/a_{AC})^{n_2}}, \quad
+f_{HI} = \frac{(AC/a_h)^{n_2}}{1+(AC/a_h)^{n_2}}
 $$
 
 $$
-\dot E_2 = -\left(\frac{f_{E1}}{\tau_{in}} + \frac{1}{TE}\right)E_2 + \frac{f_{E1}TE}{c_1+c_2}
+f_p = \frac{(th/\tau_p)^{n_2}}{1+(th/\tau_p)^{n_2}}
 $$
 
-Exercise glucose terms:
+Glycogen depletion fraction (when $tPA>0$ and $PAint>0$):
 
 $$
-QE_1 = \beta\frac{\max(0,E_1)}{HR_0}
-$$
-
-$$
-QE_{21} = \alpha\,\max(0,E_2)^2\,\max(0,x_1)\,\max(0,Q_1)
+\bar{I}_{avg} = \frac{PAint}{tPA}, \quad
+t_{depl} = \max(10^{-3},\; -a_{depl}\bar{I}_{avg}+b_{depl})
 $$
 
 $$
-QE_{22} = \alpha\,\max(0,E_2)^2\,\max(0,x_2)\,\max(0,Q_2)
+f_t = \frac{(tPA/t_{depl})^{n_1}}{1+(tPA/t_{depl})^{n_1}}
 $$
 
-These modify glucose dynamics as:
+### 4.2 Intensity-blended rGP parameters
 
 $$
-\dot Q_1 = U_G + EGP_c - R_{12} - F_{01}^c - F_R - QE_{21}
+q_3 = (1-f_p)\,q_{3l} + f_p\,q_{3h}, \quad q_4 = (1-f_p)\,q_{4l} + f_p\,q_{4h}
+$$
+
+where subscript $l$ = aerobic (T1D-validated), $h$ = anaerobic (EXPERIMENTAL).
+
+### 4.3 State derivatives
+
+$$
+\dot Y = -\frac{1}{\tau_{AC}}Y + \frac{1}{\tau_{AC}}AC
 $$
 
 $$
-\dot Q_2 = R_{12} - R_2 + QE_{21} - QE_{22} - QE_1
+\dot Z = b\,f_Y Y - \frac{1-f_Y}{\tau_Z}Z
+$$
+
+$$
+\dot{rGU} = q_1 f_Y Y - q_2\,rGU
+$$
+
+$$
+\dot{rGP} = q_3 f_Y Y - q_4\,rGP
+$$
+
+$$
+\dot{tPA} = f_{AC} - (1-f_{AC})\,tPA
+$$
+
+$$
+\dot{PAint} = f_{AC}\cdot AC - (1-f_{AC})\,PAint
+$$
+
+$$
+\dot{rdepl} = q_6\,(f_t\,rGP - rdepl)
+$$
+
+$$
+\dot{th} = f_{HI} - (1-f_{HI})\,q_5\,th
+$$
+
+### 4.4 Q1 interaction terms
+
+$$
+\text{exercise\_uptake} = rGU \cdot Q_1
+$$
+
+$$
+\text{exercise\_prod} = \max(0,\; rGP-rdepl)\cdot Q_1
+$$
+
+$$
+\text{exercise\_si} = Z \cdot x_1 \cdot Q_1
+$$
+
+These modify glucose dynamics:
+
+$$
+\dot Q_1 = U_G + EGP_c - R_{12} - F_{01}^c - F_R - \text{exercise\_uptake} + \text{exercise\_prod} - \text{exercise\_si}
+$$
+
+$$
+\dot Q_2 = R_{12} - R_2
 $$
 
 ## 5) Steady-State Initialization
@@ -201,9 +253,11 @@ $$
 Given basal insulin $u_{\mu}$ [mU/min], the implementation enforces fasting equilibrium assumptions:
 
 $$
-\dot S_1=\dot S_2=\dot I=\dot x_1=\dot x_2=\dot x_3=\dot D_1=\dot D_2=\dot E_1=\dot E_2=\dot T_E=0,
-\quad
-D_1=D_2=E_1=E_2=T_E=0
+\dot S_1=\dot S_2=\dot I=\dot x_1=\dot x_2=\dot x_3=\dot D_1=\dot D_2=0,\quad \dot Y=\dot Z=\dot{rGU}=\dot{rGP}=\dot{tPA}=\dot{PAint}=\dot{rdepl}=\dot{th}=0
+$$
+
+$$
+D_1=D_2=Y=Z=rGU=rGP=tPA=PAint=rdepl=th=0 \quad (AC(t)=0 \text{ at fasting})
 $$
 
 and computes:
@@ -253,37 +307,39 @@ $$
 The implemented unknown vector is:
 
 $$
-z = [x_1,\ldots,x_{13},u]^T
+z = [x_1,\ldots,x_{18},u]^T
 $$
 
-where $x=[Q_1,Q_2,S_1,S_2,I,x_1,x_2,x_3,D_1,D_2,E_1,E_2,T_E]$ and $u$ is basal insulin input (mU/min).
+where $x=[Q_1,Q_2,S_1,S_2,I,x_1,x_2,x_3,D_1,D_2,Y,Z,rGU,rGP,tPA,PAint,rdepl,th]$ and $u$ is basal insulin input (mU/min).
 
 The nonlinear root system is:
 
 $$
 F(z)=
 \begin{bmatrix}
-f_{Hovorka}(x,u,p) \\
+f_{Hovorka+ETH}(x,u,p) \\
 G(x)-G_{target}
 \end{bmatrix}=0
 $$
 
-where $f_{Hovorka}(x,u,p)$ is the 13-state ODE right-hand side evaluated at steady-state inputs.
+where $f_{Hovorka+ETH}(x,u,p)$ is the 18-state ODE right-hand side evaluated at steady-state inputs.
 
-**Notation note on $p$:** $p$ denotes the fixed patient-specific model parameters (e.g. $V_G$, $k_{12}$, $SI_1$, ...). They are written explicitly in $f(x,u,p)$,following standard dynamical-systems convention, to make clear what the function depends on, but they are *not* unknowns of the Newton system. The Newton iteration solves only for $z=[x,u]$; $p$ remains constant throughout.
+**Notation note on $p$:** $p$ denotes the fixed patient-specific model parameters (e.g. $V_G$, $k_{12}$, $SI_1$, ...). They are written explicitly in $f(x,u,p)$, following standard dynamical-systems convention, to make clear what the function depends on, but they are *not* unknowns of the Newton system. The Newton iteration solves only for $z=[x,u]$; $p$ remains constant throughout.
 
 Steady-state inputs used during the solve:
 
 $$
-D(t)=0,\quad \Delta HR(t)=0
+D(t)=0,\quad AC(t)=0
 $$
+
+At fasting ($AC=0$), all ETH states are identically zero and their ODEs decouple from the Hovorka core. The 18-state Jacobian block for ETH states reduces to a negative-diagonal matrix of decay rates, which is well-conditioned and does not degrade Newton convergence.
 
 and $G(x)=Q_1/(V_GBW)$.
 
 Implementation architecture is method-general via pluggable callbacks:
 
-- residual $(z,p)\rightarrow F\in\mathbb{R}^{14}$
-- jacobian $(z,F,p)\rightarrow J\in\mathbb{R}^{14\times14}$
+- residual $(z,p)\rightarrow F\in\mathbb{R}^{19}$
+- jacobian $(z,F,p)\rightarrow J\in\mathbb{R}^{19\times19}$
 - project $(z)\rightarrow z_{constrained}$
 - observable $(z,p)\rightarrow G(z)$
 
@@ -336,7 +392,7 @@ Update is accepted when trial score decreases.
 
 Constraints during evaluation:
 
-- nonnegative clipping on physiological nonnegative states ($Q_1,Q_2,S_1,S_2,I,D_1,D_2,E_1,E_2,T_E$)
+- nonnegative clipping on physiological nonnegative states ($Q_1,Q_2,S_1,S_2,I,D_1,D_2,Y,Z,rGU,rGP,tPA,PAint,rdepl,th$)
 - insulin clipping: $u\in[10^{-6},200]$
 
 Stopping criteria:
@@ -363,23 +419,28 @@ $$
 
 and scenario sampled as categorical draw with probabilities $p_i$.
 
-### 6.2 Exercise intensity mapping
+### 6.2 Exercise intensity and scenario mapping
+
+Exercise intensity is represented directly as accelerometer counts $AC(t)$, the native input to the ETH model. Scenario-specific AC ranges (all in [count/min]):
+
+| Scenario | Type | Duration | AC range |
+| --- | --- | --- | --- |
+| 2 — active | moderate aerobic | 30–75 min | 1200–2000 |
+| 7 — prolonged aerobic | long aerobic | 60–90 min | 1500–2500 |
+| 8 — anaerobic (EXPERIMENTAL) | resistance/HIIT | 30–60 min | 6000–9000 |
+| 9 — exercise + missed bolus | moderate aerobic | 30–75 min | 1000–1800 |
+
+Reference thresholds: $a_{AC}=1000$ counts → $f_{AC}=0.5$ (aerobic onset); $a_h=5600$ counts → $f_{HI}=0.5$ (anaerobic onset).
+
+Total AC at minute $t$:
 
 $$
-f_{HRR} = \frac{\text{intensity\_pct}}{100}
+AC(t) = AC_{baseline}(t,\text{scenario}) + AC_{session}(t,\text{schedule})
 $$
 
-$$
-HR_{max} = \max(HR_0+1, 220-\text{age})
-$$
+where $AC_{baseline}$ models incidental movement synchronized with meal windows (typically 75–500 counts for normal/active, 75–200 for sedentary, 0 for meal-perturbation scenarios 4–6), and $AC_{session}$ is the planned exercise session intensity (including burst modulation for scenario 8).
 
-$$
-HRR = HR_{max}-HR_0
-$$
-
-$$
-\Delta HR = f_{HRR}\cdot HRR
-$$
+Anaerobic burst pattern (scenario 8): 2 min on / 3 min rest cycle, $AC_{burst} = 1.5 \times AC_{session}$.
 
 ## 7) Sensor And Measurement Equations
 
@@ -575,10 +636,4 @@ $$
 
 $$
 U_{basal,mU/min}=\frac{S_1}{\tau_I}
-$$
-
-- Hour/minute conversion used in schedules:
-
-$$
-\text{minutes} = 60h + m
 $$

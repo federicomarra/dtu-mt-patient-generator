@@ -33,7 +33,7 @@ if __name__ == "__main__":
 
     export_config = ExportConfig(
         export_to_parquet=True,
-        export_to_csv=True
+        export_to_csv=False
     )
     
     folder = generate_library_parallel(config, export_config, workers=workers)

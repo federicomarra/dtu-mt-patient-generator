@@ -206,6 +206,77 @@ def run_simulation(
 
             # Track state across days
             current_state: np.ndarray = np.array(x0_initial, dtype=np.float64)
+
+            # ── Burn-in (warm-up) ──────────────────────────────────────────────────
+            # Run n_warmup_days before recording to let ETH exercise states (Y, Z)
+            # reach a cyclic steady state.  Negative day cache indices (-n, ..., -1)
+            # avoid collisions with recorded day keys (0, ..., n_days-1).
+            # The warmup controller state is thrown away afterwards so that latch
+            # timers do not bleed into the recorded horizon.
+            if config.n_warmup_days > 0:
+                warmup_controller = ControllerState()
+                _wu_day_insulin = np.full(minutes_per_day + 1, np.nan, dtype=np.float64)
+                _wu_day_cho     = np.full(minutes_per_day + 1, np.nan, dtype=np.float64)
+                for _wu_idx in range(config.n_warmup_days):
+                    _wu_cache_day = _wu_idx - config.n_warmup_days  # -n_warmup_days … -1
+                    if config.random_scenarios:
+                        _wu_scenario = int(rng.choice(N_SCENARIOS, p=SCENARIO_WEIGHTS)) + 1
+                    else:
+                        _wu_scenario = int(config.fixed_scenario)
+                    _wu_day_insulin[:] = np.nan
+                    _wu_day_cho[:] = np.nan
+
+                    def _wu_ode(t: float, x: np.ndarray,
+                                _s: int = _wu_scenario, _d: int = _wu_cache_day,
+                                _c: ControllerState = warmup_controller) -> np.ndarray:
+                        x_s = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0, posinf=1e6, neginf=-1e6)
+                        np.clip(x_s, -1e6, 1e6, out=x_s)
+                        _cm = int(np.floor(t))
+                        _abs = _wu_idx * minutes_per_day + _cm
+                        _g = float(x_s[0]) / vg_bw if vg_bw > 0.0 else 0.0
+                        _iob = max(0.0, float(x_s[2]) + float(x_s[3])) / 1000.0
+                        _beff, _icr_eff, _ = apply_guard_iob_isf(
+                            current_abs_min=_abs, g_est=_g, iob_u=_iob,
+                            basal_hourly_patient=basal_hourly_patient,
+                            insulin_carbo_ratio_patient=insulin_carbo_ratio_patient,
+                            insulin_sensitivity_patient=insulin_sensitivity_patient,
+                            config=config, state=_c,
+                        )
+                        _u, _d_cho, _ac = scenario_with_cached_meals(
+                            time=_cm, patient_id=sim_patient_id, day=_d,
+                            basal_hourly=_beff, scenario=_s,
+                            insulin_carbo_ratio=_icr_eff, seed=config.random_seed,
+                        )
+                        dy = np.asarray(hovorka_equations(
+                            _cm, x_s, patient_params,
+                            scenario_with_cached_meals, scenario=_s,
+                            patient_id=sim_patient_id, day=_d,
+                            basal_hourly=_beff,
+                            insulin_carbo_ratio=_icr_eff,
+                            seed=config.random_seed,
+                            precomputed_inputs=(float(_u), float(_d_cho), float(_ac)),
+                        ), dtype=np.float64)
+                        apply_hypo_rescue_to_derivative(
+                            dy=dy, current_abs_min=_abs, g_est=_g,
+                            patient_params=patient_params, config=config, state=_c,
+                        )
+                        dy = np.nan_to_num(dy, copy=False, nan=0.0,
+                                           posinf=config.derivative_clip, neginf=-config.derivative_clip)
+                        np.clip(dy, -config.derivative_clip, config.derivative_clip, out=dy)
+                        return dy
+
+                    _wu_sol = solve_ivp(  # type: ignore[misc]
+                        _wu_ode, (0, minutes_per_day), current_state,
+                        method=config.solver_method,
+                        t_eval=np.array([minutes_per_day]),
+                        dense_output=False, rtol=1e-6, atol=1e-8,
+                        max_step=config.solver_max_step,
+                    )
+                    current_state = np.asarray(_wu_sol.y[:, -1], dtype=np.float64)  # type: ignore[misc]
+                    current_state = np.nan_to_num(current_state, nan=0.0, posinf=1e6, neginf=0.0)
+                    if config.clip_states:
+                        current_state = clip_state_trajectory(current_state.reshape(-1, 1))[:, 0]
+
             patient_full_trajectory_noisy: list[np.ndarray] = []
             patient_full_trajectory_physio: list[np.ndarray] = []
             patient_total_points = 0
@@ -217,7 +288,12 @@ def run_simulation(
             patient_correction_isf_units = 0.0
             previous_noise_value: float | None = None
             controller_state = ControllerState()
-        
+            # Per-day quality tracking: list of (scenario_id, hypo_pct, hyper_pct, min_glucose).
+            # Rejection compares each day against its scenario-specific threshold so that
+            # exercise days (2, 7, 8, 9) use the looser exercise threshold even in random-scenario runs.
+            per_day_quality: list[tuple[int, float, float, float]] = []
+            _EXERCISE_SCENARIO_IDS: frozenset[int] = frozenset({2, 7, 8, 9})
+
             # Simulate each day
             for day_idx in range(config.n_days):
             
@@ -267,7 +343,6 @@ def run_simulation(
                         basal_hourly=basal_hourly_effective,
                         scenario=scenario,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
-                        patient_age_years=float(patient_params["age_years"]),
                         seed=config.random_seed,
                     )
                     if 0 <= minute_idx < n_measurements:
@@ -284,7 +359,6 @@ def run_simulation(
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
-                        patient_age_years=float(patient_params["age_years"]),
                         meal_schedule=None,
                         seed=config.random_seed,
                         precomputed_inputs=(float(u_applied), float(d_applied), float(activity_applied)),
@@ -410,6 +484,14 @@ def run_simulation(
                 if config.enable_iob_bolus_guard:
                     patient_iob_guard_active_points += int(np.sum(iob_segment_u > config.iob_guard_units))
 
+                # Accumulate per-day quality stats for scenario-aware rejection.
+                day_n = int(physio_segment_mmol.size)
+                if day_n > 0:
+                    day_hypo_pct  = 100.0 * int(np.sum(physio_segment_mmol < 3.9))  / day_n
+                    day_hyper_pct = 100.0 * int(np.sum(physio_segment_mmol > 10.0)) / day_n
+                    day_min_glucose = float(np.min(physio_segment_mmol))
+                    per_day_quality.append((scenario, day_hypo_pct, day_hyper_pct, day_min_glucose))
+
             # Absolute-minute end of this simulated horizon, used to clip correction windows.
             horizon_end_abs_min = config.n_days * minutes_per_day
             patient_correction_isf_active_points += count_correction_active_points(
@@ -423,23 +505,43 @@ def run_simulation(
             patient_full_trajectory_noisy_concat = np.concatenate(patient_full_trajectory_noisy, dtype=np.float64)  # type: ignore[arg-type]
             patient_full_trajectory_physio_concat = np.concatenate(patient_full_trajectory_physio, dtype=np.float64)  # type: ignore[arg-type]
 
-            hypo_count = int(np.sum(patient_full_trajectory_physio_concat < 3.9))
-            hyper_count = int(np.sum(patient_full_trajectory_physio_concat > 10.0))
             total_count = int(patient_full_trajectory_physio_concat.size)
-            hypo_pct = (100.0 * hypo_count / total_count) if total_count > 0 else 0.0
-            hyper_pct = (100.0 * hyper_count / total_count) if total_count > 0 else 0.0
             max_glucose = float(np.max(patient_full_trajectory_physio_concat)) if total_count > 0 else 0.0
-            if hyper_pct > instability_hyper_pct or max_glucose > instability_max_glucose_mmol:
+            # Instability: evaluated on total trajectory (catches any runaway day).
+            total_hyper_pct = (
+                100.0 * int(np.sum(patient_full_trajectory_physio_concat > 10.0)) / total_count
+                if total_count > 0 else 0.0
+            )
+            if total_hyper_pct > instability_hyper_pct or max_glucose > instability_max_glucose_mmol:
                 rejected_patients += 1
                 rejected_instability += 1
                 del results_tot[sim_patient_id]
                 continue
-            if hypo_pct > quality_max_hypo_pct:
+            # Quality: per-day scenario-aware rejection.
+            # Each day is compared against the threshold for its own scenario so that
+            # exercise days tolerate higher hypo% regardless of random vs fixed mode.
+            # Also enforce a hard minimum glucose floor across all days.
+            _quality_hypo_fail  = False
+            _quality_hyper_fail = False
+            _quality_floor_fail = False
+            for _scen_id, _day_hypo, _day_hyper, _day_min in per_day_quality:
+                _day_hypo_thresh = (
+                    config.quality_max_hypo_pct_exercise_threshold
+                    if _scen_id in _EXERCISE_SCENARIO_IDS
+                    else quality_max_hypo_pct
+                )
+                if _day_hypo > _day_hypo_thresh:
+                    _quality_hypo_fail = True
+                if _day_hyper > quality_max_hyper_pct:
+                    _quality_hyper_fail = True
+                if _day_min < config.quality_min_glucose_mmol:
+                    _quality_floor_fail = True
+            if _quality_floor_fail or _quality_hypo_fail:
                 rejected_patients += 1
                 rejected_quality_hypo += 1
                 del results_tot[sim_patient_id]
                 continue
-            if hyper_pct > quality_max_hyper_pct:
+            if _quality_hyper_fail:
                 rejected_patients += 1
                 rejected_quality_hyper += 1
                 del results_tot[sim_patient_id]

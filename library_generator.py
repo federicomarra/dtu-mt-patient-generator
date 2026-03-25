@@ -16,7 +16,7 @@ if __name__ == "__main__":
     workers = max(1, (os.cpu_count() or 2) // 2)
 
     config = SimulationConfig(
-        n_patients=100000,
+        n_patients=20000,
         n_days=14,           # 2 weeks: gives sequence models a full baseline before anomaly days
         international_unit=True,
         noise_std=0.10,

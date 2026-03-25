@@ -867,6 +867,19 @@ def scenario_with_cached_meals(
     )
 
 
+def get_cached_meal_schedule(
+    patient_id: int,
+    day: int,
+    scenario: int,
+) -> Optional[MealSchedule]:
+    """Return the cached MealSchedule for a given (patient_id, day, scenario).
+
+    Returns None if scenario_with_cached_meals has not yet been called for this
+    combination (i.e. the cache entry doesn't exist yet).
+    """
+    return _meal_cache.get((patient_id, day, scenario))
+
+
 def clear_meal_cache() -> None:
     """Clear the meal cache (useful for tests or starting a new cohort)."""
     global _meal_cache

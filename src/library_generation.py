@@ -87,6 +87,14 @@ def generate_library_parallel(
     merged = _merge_results(blocks)
     accepted_total = len(merged)
 
+    # Warn if the rejection pipeline discarded more than 20% of requested patients.
+    if accepted_total < target_patients * 0.8:
+        print(
+            f"Warning: accepted {accepted_total} patients but requested {target_patients} "
+            f"({100.0 * accepted_total / target_patients:.1f}%). "
+            "Consider relaxing quality thresholds or increasing n_patients."
+        )
+
     output_folder = create_export_directory(base_folder=output_base_folder)
     if output_folder is None:
         return None

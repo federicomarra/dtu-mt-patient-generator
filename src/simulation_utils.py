@@ -7,11 +7,18 @@ from typing import cast
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 import numpy as np  # type: ignore[import-untyped]
 
-from src.model import ParameterSet
+from src.model import ParameterSet, get_non_negative_state_indices
+
+
 def clip_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
-    """Clip state variables that must remain non-negative."""
+    """Clip state variables that must remain non-negative.
+
+    Uses get_non_negative_state_indices() as the single source of truth so that
+    exercise states E1/E2/TE (indices 10-12) are included and any future state
+    additions are automatically picked up.
+    """
     clipped = state_trajectory.copy()
-    non_negative_indices = np.array([0, 1, 2, 3, 4, 8, 9], dtype=np.int64)
+    non_negative_indices = get_non_negative_state_indices()
     clipped[non_negative_indices, :] = np.maximum(clipped[non_negative_indices, :], 0.0)
     return clipped
 

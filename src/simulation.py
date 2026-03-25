@@ -12,7 +12,7 @@ from tqdm import tqdm
 # --- Imports from src ---
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
 from src.parameters import generate_monte_carlo_patients
-from src.input import scenario_with_cached_meals, N_SCENARIOS, SCENARIO_WEIGHTS, clear_meal_cache
+from src.input import scenario_with_cached_meals, get_cached_meal_schedule, N_SCENARIOS, SCENARIO_WEIGHTS, clear_meal_cache
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
 from src.simulation_config import SimulationConfig
@@ -36,6 +36,9 @@ class DayResult(TypedDict):
     blood_glucose: np.ndarray
     insulin_mU_min: np.ndarray
     cho_mg_min: np.ndarray
+    scenario_id: int
+    missed_meal_id: int | None   # which meal (1-5) had no bolus; None if N/A
+    late_bolus_id: int | None    # which meal (1-5) had a late bolus; None if N/A
 
 
 class PatientResult(TypedDict):
@@ -374,11 +377,21 @@ def run_simulation(
                     glycemia_day_array = glycemia_day_array * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
                     glycemia_day_physio = glycemia_day_physio * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
             
+                # Retrieve the cached meal schedule to extract ground-truth labels.
+                # scenario_with_cached_meals always populates _meal_cache before returning,
+                # so get_cached_meal_schedule is guaranteed to find the entry here.
+                meal_schedule = get_cached_meal_schedule(sim_patient_id, day_idx, scenario)
+                missed_meal_id = int(meal_schedule["missed_meal_id"]) if meal_schedule and meal_schedule["missed_meal_id"] is not None else None
+                late_bolus_id = int(meal_schedule["late_bolus_id"]) if meal_schedule and meal_schedule["late_bolus_id"] is not None else None
+
                 # Store results for this day
                 results_tot[sim_patient_id]["days"][day_idx] = {
                     "blood_glucose": glycemia_day_array,
                     "insulin_mU_min": day_insulin,
                     "cho_mg_min": day_cho,
+                    "scenario_id": scenario,
+                    "missed_meal_id": missed_meal_id,
+                    "late_bolus_id": late_bolus_id,
                 }
                 # Day 0 is kept in full (0..1440 = 1441 points).
                 # Subsequent days drop their first point (minute 0 = same physical

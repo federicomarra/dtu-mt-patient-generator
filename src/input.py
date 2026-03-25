@@ -9,7 +9,13 @@ N_SCENARIOS: int = 6  # Number of different input scenarios (e.g., different mea
 # Scenarios 1-3 (normal, active, sedentary) are common day-to-day patterns.
 # Scenarios 4-6 (long lunch, missed bolus, late bolus) are deliberate anomalies
 # and should be rarer so the dataset is realistic and anomaly-class imbalance
-# matches real-world prevalence.
+# matches real-world prevalence (~3:1 normal-to-anomaly ratio).
+#
+# ML NOTE — scenario 4 (long lunch) has a weaker and more ambiguous glucose
+# signature than scenarios 5 (missed bolus) and 6 (late bolus). Since
+# scenario_id is exported, downstream ML pipelines can decide whether to
+# treat scenario 4 as a distinct anomaly class or exclude it from the
+# anomaly label entirely.
 _SCENARIO_WEIGHTS_RAW: list[float] = [0.25, 0.25, 0.25, 0.083, 0.083, 0.083]
 SCENARIO_WEIGHTS: list[float] = [
     w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
@@ -72,7 +78,7 @@ DINNER_DURATION_MAX: int = 25
 
 # Bolus timing: 15 min pre-meal for fast-paced active schedule
 PREANNOUNCED_BOLUS_TIME: int = 15
-BOLUS_DURATION: int = 1
+BOLUS_DURATION: int = 3  # minutes over which the bolus dose is spread
 
 # ============================================================================
 # Meal Schedule Type
@@ -666,15 +672,20 @@ def _apply_meal(
     if not missed:
         bolus_amount = carbs_grams / insulin_carbo_ratio  # [units]
         
+        # Spread the bolus evenly over BOLUS_DURATION minutes so the total
+        # delivered dose stays equal to bolus_amount [U] while avoiding the
+        # sharp S1 spike that a 1-minute dump produces (which can falsely
+        # trigger the IOB guard and suppress subsequent meal boluses).
+        bolus_rate = bolus_amount * 1000 / BOLUS_DURATION  # mU/min
         if late_bolus:
             # Bolus at meal time
             if meal_time <= current_time < meal_time + BOLUS_DURATION:
-                u_inc = bolus_amount * 1000  # mU/min
+                u_inc = bolus_rate
         else:
             # Pre-bolus (15 min before meal)
             bolus_start = meal_time - bolus_time
             if bolus_start <= current_time < bolus_start + BOLUS_DURATION:
-                u_inc = bolus_amount * 1000  # mU/min
+                u_inc = bolus_rate
     
     return u_inc, d_inc
 

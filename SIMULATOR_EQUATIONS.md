@@ -215,8 +215,12 @@ $$
 $$
 
 $$
-\dot{rdepl} = q_6\,(f_t\,rGP - rdepl)
+\dot{rdepl} = q_6\,(f_t\,r_m - rdepl)
 $$
+
+where $r_m = rGP$ (current exercise glucose production rate, used as ceiling for depletion).
+
+**Approximation note:** In the original Deichmann model, $r_m = \beta\left(\frac{q_3}{q_4}Y + (1-\alpha)(p_1+X_b)\right)$, where $p_1$ and $X_b$ are basal glucose production/utilization terms from the Deichmann glucose-insulin core, and $\beta$ is an additional scaling parameter. Since we do not use the Deichmann glucose core (we use the Hovorka 10-state model), these parameters have no direct equivalent. We substitute $r_m = rGP$ (the current exercise EGP rate), which at quasi-steady-state satisfies $rGP \approx q_3 f_Y Y / q_4$, matching the dominant term $q_3/q_4 \cdot Y$ from the Deichmann formula. The basal contribution $(1-\alpha)(p_1+X_b)$ is small relative to the exercise-driven term during active exercise, and introducing a Hovorka-compatible approximation (e.g. $F_{01}^c/Q_1$) would add Hovorka-specific coupling that the original ETH model does not assume. The simplification is therefore deliberate and has negligible impact for aerobic scenarios where $q_6=0$ makes $rdepl$ identically zero regardless of $r_m$.
 
 $$
 \dot{th} = f_{HI} - (1-f_{HI})\,q_5\,th
@@ -231,6 +235,8 @@ $$
 $$
 \text{exercise\_prod} = \max(0,\; rGP-rdepl)\cdot Q_1
 $$
+
+> **Implementation note:** The $\max(0,\cdot)$ clamp on $(rGP-rdepl)$ is an addition not present in the original Deichmann ODE, where the term is taken as-is. It is included here as a safety guard to prevent exercise-driven EGP from becoming negative (which would act as an unphysical glucose sink) in edge cases where numerical drift allows $rdepl > rGP$. Both states are non-negative by projection, so this situation is rare but can arise transiently during ODE integration.
 
 $$
 \text{exercise\_si} = Z \cdot x_1 \cdot Q_1
@@ -252,7 +258,7 @@ The ETH Deichmann paper (2023) presents a complete 14-state glucose-insulin-exer
 
 The fitting principle consists in extracting the three coupling terms from the ETH Q1 equation, discard the rest of the ETH glucose core, and inject those terms into Hovorka's $\dot Q_1$.
 
-**Why only $Q_1$ and $x_1$, not the other states?**
+**Why only $Q_1$, not the other states?**
 
 $Q_1$ is the accessible glucose compartment; it represents circulating plasma glucose, which is the quantity directly affected by muscle uptake, liver output, and insulin action. All three exercise coupling terms act on $Q_1$ because that is where their physiological effects manifest:
 
@@ -262,7 +268,7 @@ $Q_1$ is the accessible glucose compartment; it represents circulating plasma gl
 
 $Q_2$ is a peripheral tissue compartment. It only exchanges with $Q_1$ through the $R_{12}$ term; exercise does not act on it directly, so $\dot Q_2 = R_{12} - R_2$ remains unchanged.
 
-**Note on `eth_alpha`:** The ETH paper defines a scaling constant $\alpha = 0.27$ used in some formulations. It is stored in the patient parameter set (`eth_alpha`) for completeness but is not part of the coupling equations implemented here, where the three interaction terms are taken directly from the published ODE form without additional scaling.
+**Note on `eth_alpha` and `eth_beta`:** The ETH paper uses $\alpha = 0.27$ and $\beta$ in the $r_m$ formula for the glycogen depletion ODE (see the `rm` approximation note in section 4.3). `eth_alpha` is stored in the patient parameter set for completeness but is not used as an additional scaling factor in any of the three $Q_1$ coupling terms above. `eth_beta` is not stored because the entire $r_m$ formula is replaced by the $r_m = rGP$ approximation.
 
 ## 5) Steady-State Initialization
 
@@ -421,7 +427,7 @@ Stopping criteria:
 with:
 
 - mmol/L path: $tol_G = 0.1$ mmol/L
-- mg/dL path: input $G_{mg/dL}$ is first converted to mmol/L via $G_{mmol}=G_{mg/dL}\,/\,(M_w^G/10)$, then $tol_G = 0.1\,/\,(M_w^G/10) \approx 0.006$ mmol/L
+- mg/dL path: input $G_{mg/dL}$ is first converted to mmol/L via $G_{mmol}=G_{mg/dL}\,/\,(M_w^G/10)$, then $tol_G = 0.1\,/\,(M_w^G/10) \approx 0.0055$ mmol/L (with $M_w^G = 180.16$, the exact value is $0.1/18.016 = 0.00555$ mmol/L)
 
 The mg/dL tolerance is tighter by unit-conversion, but in practice the $\lVert f \rVert_\infty \le 10^{-6}$ ODE residual bound is always the binding constraint — both paths converge to residuals of order $10^{-8}$ to $10^{-7}$.
 
@@ -446,11 +452,13 @@ Exercise intensity is represented directly as accelerometer counts $AC(t)$, the 
 | Scenario | Type | Duration | AC range |
 | --- | --- | --- | --- |
 | 2 — active | moderate aerobic | 30–75 min | 1200–2000 |
-| 7 — prolonged aerobic | long aerobic | 60–90 min | 1500–2500 |
+| 7 — prolonged aerobic | long aerobic | **80–90 min** | 1500–2500 |
 | 8 — anaerobic (EXPERIMENTAL) | resistance/HIIT | 30–60 min | 6000–9000 |
 | 9 — exercise + missed bolus | moderate aerobic | 30–75 min | 1000–1800 |
 
 Reference thresholds: $a_{AC}=1000$ counts → $f_{AC}=0.5$ (aerobic onset); $a_h=5600$ counts → $f_{HI}=0.5$ (anaerobic onset).
+
+**ML distinguishability note:** The AC ranges for scenarios 2, 7, and 9 all fall in the aerobic band. Because $n_2=100$ (very steep Hill coefficient), $f_{AC}$ saturates to $\approx 1$ for any $AC \gtrsim 1100$ — the ETH model is functionally identical for $AC=1500$ and $AC=2000$, so AC range differences between these scenarios do not produce distinguishable glucose signatures. The primary differentiator between scenario 2 and scenario 7 is **duration**: scenario 7 is guaranteed to be $\ge 80$ min (above the scenario 2 maximum of 75 min), ensuring that every scenario 7 session always produces greater $Z$, $rGU$, and $rGP$ accumulation than any scenario 2 session. Scenario 8 is cleanly separated in both duration and AC (above $a_h=5600$ anaerobic threshold).
 
 Total AC at minute $t$:
 
@@ -478,40 +486,56 @@ $$
 
 ### 7.2 Sensor noise modes
 
-- none: $G_{meas}=G_{true}$
-- gaussian: $G_{meas}=G_{true}+\epsilon$, $\epsilon\sim\mathcal N(0,\sigma^2)$
-- bias_gaussian: $G_{meas}=G_{true}+b+\epsilon$
-- lagged:
+`src/sensor.py` implements four modes. The **lagged** mode is the one active in the main simulation and library generation:
+
+- **none**: $G_{meas}=G_{true}$
+- **gaussian**: $G_{meas}=G_{true}+\epsilon$, $\epsilon\sim\mathcal N(0,\sigma^2)$
+- **bias_gaussian**: $G_{meas}=G_{true}+b+\epsilon$
+- **lagged** *(active)*: two-stage model combining a physiological CGM lag with AR(1) correlated error
+
+## 8) Simulation Noise Process (Active: Lagged CGM Model)
+
+The simulation loop uses the **lagged** sensor mode applied point-by-point across the state trajectory. The sensor state (previous display value and previous AR(1) error) is carried across day boundaries, making the noise process continuous over the full multi-day patient horizon.
+
+**What is AR(1)?** AR(1) stands for *first-order autoregressive process*: each noise sample is a weighted sum of the previous sample and a fresh Gaussian innovation. This produces temporally correlated noise — consecutive CGM errors tend to be in the same direction rather than jumping independently each minute. The parameter $\phi \in [0,1)$ controls the correlation strength: $\phi=0$ is white (uncorrelated) noise, $\phi \to 1$ is a near-random-walk with very slow drift. Real CGM sensors have correlated errors due to sensor drift and interstitial fluid dynamics, making AR(1) a standard model in the glucose monitoring literature.
+
+**Stage 1 — Physiological CGM lag:**
+
+A real CGM measures interstitial fluid glucose, which lags behind plasma glucose by roughly 5–15 minutes. The first-order lag model blends the current true glucose toward the previous displayed value:
 
 $$
-G_{lag}(t)=G_{disp}(t-1)+\alpha_{lag}(G_{true}(t)-G_{disp}(t-1))
+G_{lag}(t)=G_{disp}(t-1)+\alpha_{lag}\bigl(G_{true}(t)-G_{disp}(t-1)\bigr)
 $$
 
+where $\alpha_{lag} \in (0,1]$ is the blend factor. Smaller $\alpha_{lag}$ means more lag (slower tracking). Default $\alpha_{lag}=0.25$ corresponds to a time constant of $\tau = 1/\alpha_{lag} - 1 = 3$ sample periods (≈3 min).
+
+**Stage 2 — AR(1) correlated sensor error:**
+
 $$
-e_t = \phi e_{t-1}+\eta_t,
+e_t = \phi\, e_{t-1}+\eta_t,
 \quad
-\eta_t\sim\mathcal N\left(0,\sigma^2(1-\phi^2)\right)
+\eta_t\sim\mathcal N\!\left(0,\,\sigma^2(1-\phi^2)\right)
 $$
 
-$$
-G_{meas}(t)=G_{lag}(t)+b+e_t
-$$
+The innovation variance $\sigma^2(1-\phi^2)$ is chosen so that the stationary variance of $e_t$ equals $\sigma^2$ regardless of $\phi$.
 
-## 8) Simulation Noise Process (Day Trajectory)
-
-AR(1) process used in simulation loop:
+**Combined measurement:**
 
 $$
-n_t = \rho n_{t-1} + \xi_t,
-\quad
-\xi_t\sim\mathcal N\left(0,\sigma^2(1-\rho^2)\right)
+G_{meas}(t)=G_{lag}(t)+e_t
 $$
 
-Daily glycemia sample used for export/plots:
+(bias $b=0$ by default).
 
-$$
-G_t = \frac{Q_{1,t}}{V_G\cdot BW} + n_t
-$$
+**Parameters** (all config-driven from `SimulationConfig`):
+
+| Parameter | Symbol | Default | Meaning |
+| --- | --- | --- | --- |
+| `noise_std` | $\sigma$ | 0.10 mmol/L | Stationary std of correlated error |
+| `noise_autocorr` | $\phi$ | 0.70 | AR(1) autocorrelation coefficient |
+| `cgm_lag_alpha` | $\alpha_{lag}$ | 0.25 | CGM lag blend factor |
+
+The physio (noiseless) trajectory is computed separately and used exclusively for the rejection pipeline — rejection decisions are never influenced by sensor noise.
 
 ## 9) Control Layer Equations
 
@@ -527,6 +551,8 @@ Then basal is forced to zero during guard window.
 
 ## 9.2 IOB bolus attenuation
 
+When insulin-on-board (IOB) is high, the next meal bolus is reduced by inflating the effective insulin-to-carb ratio (ICR). A higher ICR means fewer units of insulin are dosed per gram of carbohydrate, so the computed bolus dose decreases. This prevents stacking of meal boluses on top of already-active insulin.
+
 Using thresholds $IOB_{guard}$ and $IOB_{full}$:
 
 $$
@@ -537,7 +563,14 @@ $$
 ICR_{eff} = ICR\cdot\left(1 + frac\cdot(m_{ICR,max}-1)\right)
 $$
 
+- When $IOB \le IOB_{guard}$: $frac=0$, $ICR_{eff}=ICR$ — no attenuation, full bolus dose.
+- When $IOB \ge IOB_{full}$: $frac=1$, $ICR_{eff}=m_{ICR,max}\cdot ICR$ — maximum attenuation, bolus dose scaled down to $1/m_{ICR,max}$ of the unadjusted amount.
+- $m_{ICR,max} > 1$ **increases** ICR (and therefore **decreases** the bolus dose). Default: $m_{ICR,max}=1.6$ → minimum bolus is 62.5% of the unadjusted dose.
+- Default thresholds: $IOB_{guard}=4$ U, $IOB_{full}=8$ U. All values are config-driven from `SimulationConfig`.
+
 ## 9.3 ISF correction dose
+
+When glucose is persistently above target and a cooldown window has elapsed, a small correction bolus is computed and delivered spread over a short window. This acts as a lightweight secondary controller to bring glucose back toward the target range.
 
 If $G>G_{target}^{corr}$ and cooldown allows:
 
@@ -545,17 +578,25 @@ $$
 U_{raw} = \frac{G-G_{target}^{corr}}{ISF}
 $$
 
+This is the naive correction dose based on the current glucose gap and the patient's insulin-sensitivity factor.
+
 $$
 U_{IOBcredit} = \max(0, IOB-IOB_{free})
 $$
+
+The IOB credit represents insulin already on board that is already working toward correction. Only the excess above the "free zone" ($IOB_{free}$) is credited — a small residual IOB (e.g. $\le 0.5$ U) is not subtracted, to allow independent small corrections when glucose is persistently high.
 
 $$
 U_{net} = \max(0, U_{raw}-U_{IOBcredit})
 $$
 
+The credit is subtracted to prevent double-dosing (bolus stacking): if IOB is already sufficient to close the gap, no additional correction fires.
+
 $$
 U_{dose}=\min(U_{max},U_{net}),\quad U_{dose}\ge U_{min}\ \text{to trigger}
 $$
+
+$U_{dose}$ is capped at $U_{max}$ to prevent excessively large automated corrections, and the correction only fires if the net dose is at least $U_{min}$ (prevents spurious micro-boluses).
 
 Delivered as rate over correction duration $T_{corr}$:
 
@@ -568,6 +609,8 @@ and added to effective basal while active:
 $$
 U_{basal,eff}^{(U/hr)} \leftarrow U_{basal,eff}^{(U/hr)} + rate_{corr,mU/min}\cdot\frac{60}{1000}
 $$
+
+Default values: $G_{target}^{corr}=6.5$ mmol/L, $IOB_{free}=0.5$ U, $U_{max}=2$ U, $U_{min}=0.05$ U, $T_{corr}=5$ min, cooldown=60 min. All values are config-driven from `SimulationConfig`.
 
 ## 9.4 Hypo rescue carbs
 
@@ -622,18 +665,20 @@ $$
 G_{init}\in [G_{init,min},\; G_{init,max}]
 $$
 
-**Stage 2 — Instability (evaluated over full horizon):**
+**Stage 2 — Instability (evaluated over the full concatenated trajectory):**
 
 $$
 \max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}
 $$
 
-**Stage 3 — Quality (evaluated per recorded day):**
+Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated sequence** (all days merged). Its purpose is to quickly discard numerically diverging or physiologically runaway simulations before the more expensive per-day quality checks. For example, a single day with 100% hyper-time in a 7-day run contributes only $\sim 14\%$ to the global hyper%, so it passes Stage 2 ($\theta_{hyper,instability}=30\%$) — this is intentional: Stage 2 catches explosive instability (e.g. glucose rocketing to 20+ mmol/L for hours), not moderate per-day excursions.
 
-Each recorded day $d$ with scenario $s_d$ is evaluated independently. Exercise scenarios ($s_d \in \{2,7,8,9\}$) use a relaxed hypo threshold because physiological hypoglycaemia during or after vigorous exercise is expected and handled by the rescue system:
+**Stage 3 — Quality (evaluated per recorded day independently):**
+
+Each day $d$ with scenario $s_d$ gets a base hypo threshold, then a spillover bonus is added if the **previous recorded day** was an exercise scenario:
 
 $$
-\%Hypo_d \le
+\theta_{hypo,base}(d) =
 \begin{cases}
 \theta_{hypo,exercise} & \text{if } s_d \in \{2,7,8,9\} \\
 \theta_{hypo,quality}  & \text{otherwise}
@@ -641,18 +686,47 @@ $$
 $$
 
 $$
+\theta_{hypo}(d) = \theta_{hypo,base}(d) + \delta_{spillover} \cdot \mathbf{1}[s_{d-1} \in \{2,7,8,9\}]
+$$
+
+The spillover bonus $\delta_{spillover}$ accounts for the $Z$-state (post-exercise insulin sensitivity, $\tau_Z \approx 600$ min) remaining partially active the next morning, increasing hypo risk even on days with a non-exercise scenario label. The bonus stacks correctly for back-to-back exercise days:
+
+| Day $d-1$ | Day $d$ | Effective $\theta_{hypo}(d)$ |
+| --- | --- | --- |
+| non-exercise | non-exercise | $4\%$ |
+| exercise | non-exercise | $4\% + 2\% = 6\%$ |
+| non-exercise | exercise | $8\%$ |
+| exercise | exercise | $8\% + 2\% = 10\%$ |
+
+$$
 \%Hyper_d \le \theta_{hyper,quality} \quad \forall\, d
 $$
+
+Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 13% hyper per day (which passes Stage 2 globally at 13% < 30%) is still rejected here because each day individually exceeds $\theta_{hyper,quality}=12\%$.
+
+The distinction between Stage 2 and Stage 3 hyper thresholds (30% vs 12%) is therefore intentional: Stage 2 catches runaway global instability; Stage 3 enforces per-day clinical quality without dilution across days.
 
 **Hard glucose floor (any day, any scenario):**
 
 $$
-\min_t G(t) \ge G_{floor}
+\min_t G_{physio}(t) \ge G_{floor}
 $$
 
-A patient is rejected if any single day violates its threshold, or if glucose drops below the floor at any minute. This prevents deeply hypoglycaemic spikes from entering the accepted cohort even when the day-average hypo% would pass.
+A patient is rejected if any single day violates its threshold, or if the **physiological** (noiseless) glucose drops below $G_{floor}$ at any minute. This prevents deeply hypoglycaemic states from entering the accepted cohort even when the day-average hypo% would pass.
 
-Default values: $\theta_{hypo,quality}=4\%$, $\theta_{hypo,exercise}=8\%$, $\theta_{hyper,quality}=12\%$, $\theta_{hyper,instability}=30\%$, $G_{floor}=3.0$ mmol/L. All thresholds are config-driven from `SimulationConfig`.
+Default values: $\theta_{hypo,quality}=4\%$, $\theta_{hypo,exercise}=8\%$, $\delta_{spillover}=2\%$, $\theta_{hyper,quality}=12\%$, $\theta_{hyper,instability}=30\%$, $G_{floor}=3.0$ mmol/L. All thresholds are config-driven from `SimulationConfig`.
+
+**Design note — floor applied to physiological glucose only, not to the CGM signal:**
+
+All rejection criteria, including the hard floor, are evaluated exclusively on the noiseless physiological glucose $G_{physio}(t) = Q_1(t)/(V_G \cdot BW)$. The exported `blood_glucose` column is the lagged CGM signal $G_{meas}(t)$ (section 8), which can occasionally fall below $G_{floor}$ due to sensor noise even when the physiological state is above it.
+
+This design choice is deliberate and motivated by the downstream ML use case:
+
+1. **Scenario anomaly detection** (primary task). The ML model learns to identify anomaly patterns — missed bolus, late bolus, prolonged exercise — from the shape of the glucose and insulin trajectory over hours. Borderline low CGM readings do not affect this learning; the anomaly signature is carried by the global trajectory structure, not individual point values.
+
+2. **Hypoglycaemia alarm** (secondary task). CGM readings below 3.0 mmol/L in the exported data represent genuine near-hypoglycaemia events: the physiological glucose was at or near $G_{floor}$, the hypo rescue system was already active, and the sensor correctly reflected a very low value. Filtering these out would remove exactly the signal the model needs to learn alarm-worthy situations. It would produce a sanitised dataset where hypoglycaemia always appears well-resolved and the model never sees the borderline CGM patterns that precede a clinical alarm.
+
+The alternative — applying the floor to the CGM signal as well — would introduce a selection bias: patients whose measurement noise happened to be positive when physio glucose was near $G_{floor}$ would be accepted, while physiologically identical patients with negative noise at the same moment would be rejected. The physio floor avoids this bias while still guaranteeing that no patient with a genuinely dangerous physiological state enters the cohort.
 
 ## 12) Monte Carlo Parameter Distributions
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,7 +12,12 @@ from src.simulation_config import SimulationConfig
 from src.simulation_utils import create_export_directory
 
 
-def _worker_run(args: tuple[int, int, SimulationConfig]) -> dict[int, dict[str, object]]:
+# Return type includes a stats dict so the coordinator can print live progress
+# without any shared memory or locks.
+_WorkerResult = tuple[dict[int, dict[str, object]], dict[str, object]]
+
+
+def _worker_run(args: tuple[int, int, SimulationConfig]) -> _WorkerResult:
     worker_idx, n_patients_chunk, base_config = args
 
     worker_seed = (base_config.random_seed or 0) + (worker_idx * 10000)
@@ -23,6 +29,7 @@ def _worker_run(args: tuple[int, int, SimulationConfig]) -> dict[int, dict[str, 
     )
 
     no_export = ExportConfig(export_to_parquet=False, export_to_csv=False)
+    t0 = time.perf_counter()
     result = run_simulation(
         worker_config,
         no_export,
@@ -30,10 +37,24 @@ def _worker_run(args: tuple[int, int, SimulationConfig]) -> dict[int, dict[str, 
         show_progress=False,
         show_summary=False,
     )
+    elapsed = time.perf_counter() - t0
 
     if result is None:
-        return {}
-    return {k: dict(v) for k, v in result.items()}
+        results: dict[int, dict[str, object]] = {}
+    else:
+        results = {k: dict(v) for k, v in result.items()}
+
+    n_accepted = len(results)
+    stats: dict[str, object] = {
+        "worker_idx": worker_idx,
+        "n_requested": n_patients_chunk,
+        "n_accepted": n_accepted,
+        "elapsed_s": elapsed,
+        # Avoid division by zero; use requested as denominator so zero-accepted
+        # workers still produce a finite (pessimistic) per-patient estimate.
+        "s_per_patient": elapsed / n_patients_chunk,
+    }
+    return results, stats
 
 
 def _merge_results(
@@ -74,24 +95,63 @@ def generate_library_parallel(
         chunks[-(i + 1)] -= 1
     chunks = [c for c in chunks if c > 0]
 
+    print(
+        f"\n── Parallel library generation ──────────────────────────────\n"
+        f"  target patients : {target_patients}  |  days/patient : {config.n_days}\n"
+        f"  workers         : {workers_eff}  |  chunk sizes  : {chunks}\n"
+        f"  random_seed     : {config.random_seed}\n"
+        f"─────────────────────────────────────────────────────────────"
+    )
+
     args: list[tuple[int, int, SimulationConfig]] = [
         (idx, n_chunk, config) for idx, n_chunk in enumerate(chunks)
     ]
 
+    t_start = time.perf_counter()
+    all_stats: list[dict[str, object]] = []
+    blocks: list[dict[int, dict[str, object]]] = []
+
     if workers_eff == 1:
-        blocks = [_worker_run(args[0])]
+        result_block, stats = _worker_run(args[0])
+        blocks.append(result_block)
+        all_stats.append(stats)
+        _print_worker_done(stats, workers_eff, t_start)
     else:
         with mp.Pool(processes=workers_eff) as pool:
-            blocks = pool.map(_worker_run, args)
+            # imap_unordered lets us print a line as each worker finishes.
+            pending_blocks: list[tuple[int, dict[int, dict[str, object]]]] = []
+            for result_block, stats in pool.imap_unordered(_worker_run, args):
+                all_stats.append(stats)
+                worker_idx = int(stats["worker_idx"])  # type: ignore[arg-type]
+                pending_blocks.append((worker_idx, result_block))
+                _print_worker_done(stats, workers_eff, t_start)
+
+        # Restore deterministic order before merging so patient IDs are stable.
+        pending_blocks.sort(key=lambda x: x[0])
+        blocks = [b for _, b in pending_blocks]
 
     merged = _merge_results(blocks)
     accepted_total = len(merged)
+    total_elapsed = time.perf_counter() - t_start
 
-    # Warn if the rejection pipeline discarded more than 20% of requested patients.
+    # ── Final summary ──────────────────────────────────────────────
+    accepted_per_worker = [int(s["n_accepted"]) for s in all_stats]  # type: ignore[arg-type]
+    s_per_patient_vals = [float(s["s_per_patient"]) for s in all_stats]  # type: ignore[arg-type]
+    avg_s_per_patient = sum(s_per_patient_vals) / len(s_per_patient_vals) if s_per_patient_vals else 0.0
+    acceptance_rate = 100.0 * accepted_total / target_patients if target_patients else 0.0
+
+    print(
+        f"\n── Summary ───────────────────────────────────────────────────\n"
+        f"  accepted / requested : {accepted_total} / {target_patients}  ({acceptance_rate:.1f}%)\n"
+        f"  per-worker accepted  : {accepted_per_worker}\n"
+        f"  total elapsed        : {_fmt_elapsed(total_elapsed)}\n"
+        f"  avg time / patient   : {avg_s_per_patient:.1f} s  (wall-clock per requested slot)\n"
+        f"─────────────────────────────────────────────────────────────"
+    )
+
     if accepted_total < target_patients * 0.8:
         print(
-            f"Warning: accepted {accepted_total} patients but requested {target_patients} "
-            f"({100.0 * accepted_total / target_patients:.1f}%). "
+            f"Warning: acceptance rate {acceptance_rate:.1f}% is below 80%. "
             "Consider relaxing quality thresholds or increasing n_patients."
         )
 
@@ -106,6 +166,7 @@ def generate_library_parallel(
         "n_days": config.n_days,
         "random_seed": config.random_seed,
         "enable_plots": False,
+        "total_elapsed_s": round(total_elapsed, 1),
     }
 
     export_to_formats(
@@ -118,3 +179,33 @@ def generate_library_parallel(
     )
 
     return output_folder
+
+
+def _print_worker_done(
+    stats: dict[str, object],
+    workers_eff: int,
+    t_start: float,
+) -> None:
+    """Print a one-line status update when a worker finishes."""
+    wall = time.perf_counter() - t_start
+    idx = int(stats["worker_idx"])          # type: ignore[arg-type]
+    accepted = int(stats["n_accepted"])     # type: ignore[arg-type]
+    requested = int(stats["n_requested"])   # type: ignore[arg-type]
+    elapsed = float(stats["elapsed_s"])     # type: ignore[arg-type]
+    s_pp = float(stats["s_per_patient"])    # type: ignore[arg-type]
+    print(
+        f"  worker {idx+1:>2}/{workers_eff}  done  "
+        f"accepted {accepted:>5}/{requested:<5}  "
+        f"worker elapsed {_fmt_elapsed(elapsed)}  "
+        f"({s_pp:.1f} s/patient)  "
+        f"wall {_fmt_elapsed(wall)}",
+        flush=True,
+    )
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    """Format seconds as mm:ss or h:mm:ss."""
+    s = int(seconds)
+    if s < 3600:
+        return f"{s // 60:02d}:{s % 60:02d}"
+    return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"

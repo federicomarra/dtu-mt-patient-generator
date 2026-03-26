@@ -3,6 +3,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -35,6 +36,10 @@ if __name__ == "__main__":
         export_to_parquet=True,
         export_to_csv=False
     )
-    
+
+    t0 = time.perf_counter()
     folder = generate_library_parallel(config, export_config, workers=workers)
-    print(f"Parallel library generated at: {folder}")
+    total_s = time.perf_counter() - t0
+
+    mins, secs = divmod(int(total_s), 60)
+    print(f"Parallel library generated at: {folder}  (total {mins:02d}:{secs:02d})")

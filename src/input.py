@@ -13,11 +13,18 @@ N_SCENARIOS: int = 9
 # Target: ~3:1 normal-to-anomaly ratio. Scenarios 7-9 are intentionally rarer
 # than 4-6 to reflect real-world prevalence of prolonged/anaerobic exercise days.
 #
+# Scenario 2 (active) is deliberately lower than 1 and 3 (18% vs 25/27%) because:
+#   - Each exercise day causes Z-state spillover into the next day (~10h tau_Z), effectively
+#     making two consecutive days exercise-affected; reducing frequency limits this coupling.
+#   - Real-world adherence to structured afternoon exercise in T1D adults is ~3 sessions/week
+#     (~43%), but scenario 2 represents a specific afternoon workout, not incidental activity.
+#   - Acceptance rate is sensitive to scenario 2 frequency due to the cross-day hypo spillover.
+#
 # ML NOTE — scenario 4 (long lunch) has a weaker and more ambiguous glucose
 # signature than scenarios 5/6. Since scenario_id is exported, downstream ML
 # pipelines can decide whether to treat it as a distinct anomaly class.
 # Scenario 8 (anaerobic) uses EXPERIMENTAL parameters — see hovorka_exercise.py.
-_SCENARIO_WEIGHTS_RAW: list[float] = [0.25, 0.25, 0.25, 0.05, 0.05, 0.05, 0.04, 0.04, 0.02]
+_SCENARIO_WEIGHTS_RAW: list[float] = [0.30, 0.18, 0.27, 0.05, 0.05, 0.05, 0.04, 0.04, 0.02]
 SCENARIO_WEIGHTS: list[float] = [
     w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
 ]
@@ -133,7 +140,11 @@ _EXERCISE_START_MIN: int = time_to_minutes(16, 30)
 _EXERCISE_START_MAX: int = time_to_minutes(20, 30)
 _EXERCISE_DURATION_MIN: int = 30
 _EXERCISE_DURATION_MAX: int = 75
-_EXERCISE_DURATION_PROLONGED_MIN: int = 60   # scenario 7: prolonged aerobic
+# Scenario 7 (prolonged aerobic) minimum is set to 80 min so it never overlaps with
+# scenario 2 (max 75 min). This ensures a clean duration separation for ML anomaly
+# detection: any scenario 7 session is always longer than any scenario 2 session,
+# producing a consistently more pronounced Z/rGU accumulation in the glucose trace.
+_EXERCISE_DURATION_PROLONGED_MIN: int = 80   # scenario 7: prolonged aerobic (always > scenario 2 max)
 _EXERCISE_DURATION_PROLONGED_MAX: int = 90
 _EXERCISE_DURATION_ANAEROBIC_MIN: int = 30   # scenario 8: anaerobic/resistance
 _EXERCISE_DURATION_ANAEROBIC_MAX: int = 60

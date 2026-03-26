@@ -248,13 +248,13 @@ $$
 
 ### 4.5 Model coupling architecture
 
-The ETH Deichmann paper (2023) presents a complete 14-state glucose-insulin-exercise model: 6 simplified glucose-insulin states plus the 8 exercise states above. We do **not** use the ETH glucose-insulin core. Instead, we keep the Hovorka 10-state glucose-insulin model (which is more physiologically detailed and better validated for closed-loop insulin delivery) and graft only the ETH exercise interface onto it.
+The ETH Deichmann paper (2023) presents a complete 14-state glucose-insulin-exercise model: 6 simplified glucose-insulin states plus the 8 exercise states above. We do **not** use the ETH glucose-insulin core. Instead, we keep the Hovorka 10-state glucose-insulin model (which is more physiologically detailed and better validated for closed-loop insulin delivery) and fit only the ETH exercise interface onto it.
 
-The grafting principle: extract the three coupling terms from the ETH Q1 equation, discard the rest of the ETH glucose core, and inject those terms into Hovorka's $\dot Q_1$.
+The fitting principle consists in extracting the three coupling terms from the ETH Q1 equation, discard the rest of the ETH glucose core, and inject those terms into Hovorka's $\dot Q_1$.
 
 **Why only $Q_1$ and $x_1$, not the other states?**
 
-$Q_1$ is the accessible glucose compartment — it represents circulating plasma glucose, which is the quantity directly affected by muscle uptake, liver output, and insulin action. All three exercise coupling terms act on $Q_1$ because that is where their physiological effects manifest:
+$Q_1$ is the accessible glucose compartment; it represents circulating plasma glucose, which is the quantity directly affected by muscle uptake, liver output, and insulin action. All three exercise coupling terms act on $Q_1$ because that is where their physiological effects manifest:
 
 - `exercise_uptake` ($rGU \cdot Q_1$): muscles consume glucose from the circulating pool during exercise. Proportional to $Q_1$ because at higher blood glucose there is more substrate available.
 - `exercise_prod` ($\max(0, rGP-rdepl) \cdot Q_1$): the liver releases glucose during exercise (exercise-driven EGP). The $Q_1$ proportionality is a linearisation used in the original ETH model.

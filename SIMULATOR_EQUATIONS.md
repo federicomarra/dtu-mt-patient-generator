@@ -246,6 +246,24 @@ $$
 \dot Q_2 = R_{12} - R_2
 $$
 
+### 4.5 Model coupling architecture
+
+The ETH Deichmann paper (2023) presents a complete 14-state glucose-insulin-exercise model: 6 simplified glucose-insulin states plus the 8 exercise states above. We do **not** use the ETH glucose-insulin core. Instead, we keep the Hovorka 10-state glucose-insulin model (which is more physiologically detailed and better validated for closed-loop insulin delivery) and graft only the ETH exercise interface onto it.
+
+The grafting principle: extract the three coupling terms from the ETH Q1 equation, discard the rest of the ETH glucose core, and inject those terms into Hovorka's $\dot Q_1$.
+
+**Why only $Q_1$ and $x_1$, not the other states?**
+
+$Q_1$ is the accessible glucose compartment — it represents circulating plasma glucose, which is the quantity directly affected by muscle uptake, liver output, and insulin action. All three exercise coupling terms act on $Q_1$ because that is where their physiological effects manifest:
+
+- `exercise_uptake` ($rGU \cdot Q_1$): muscles consume glucose from the circulating pool during exercise. Proportional to $Q_1$ because at higher blood glucose there is more substrate available.
+- `exercise_prod` ($\max(0, rGP-rdepl) \cdot Q_1$): the liver releases glucose during exercise (exercise-driven EGP). The $Q_1$ proportionality is a linearisation used in the original ETH model.
+- `exercise_si` ($Z \cdot x_1 \cdot Q_1$): post-exercise elevated insulin sensitivity. The state $Z$ amplifies the existing Hovorka insulin action state $x_1$ on $Q_1$. $x_1$ specifically governs glucose transport (inter-compartment flux $R_{12}$), which is where the post-exercise GLUT4 upregulation effect is best captured. $x_2$ (glucose disposal from $Q_2$) and $x_3$ (EGP suppression) are not directly enhanced by exercise in the same way.
+
+$Q_2$ is a peripheral tissue compartment. It only exchanges with $Q_1$ through the $R_{12}$ term; exercise does not act on it directly, so $\dot Q_2 = R_{12} - R_2$ remains unchanged.
+
+**Note on `eth_alpha`:** The ETH paper defines a scaling constant $\alpha = 0.27$ used in some formulations. It is stored in the patient parameter set (`eth_alpha`) for completeness but is not part of the coupling equations implemented here, where the three interaction terms are taken directly from the published ODE form without additional scaling.
+
 ## 5) Steady-State Initialization
 
 ### 5.1 Fasting state from basal insulin
@@ -402,8 +420,10 @@ Stopping criteria:
 
 with:
 
-- $tol_G=0.1$ mmol/L for mmol/L targets
-- mg/dL targets converted by $G_{mmol}=G_{mg/dL}/(M_w^G/10)$ with consistent tolerance conversion
+- mmol/L path: $tol_G = 0.1$ mmol/L
+- mg/dL path: input $G_{mg/dL}$ is first converted to mmol/L via $G_{mmol}=G_{mg/dL}\,/\,(M_w^G/10)$, then $tol_G = 0.1\,/\,(M_w^G/10) \approx 0.006$ mmol/L
+
+The mg/dL tolerance is tighter by unit-conversion, but in practice the $\lVert f \rVert_\infty \le 10^{-6}$ ODE residual bound is always the binding constraint — both paths converge to residuals of order $10^{-8}$ to $10^{-7}$.
 
 Initialization uses a deterministic warm start from the fasting algebraic construction at $u=10$ mU/min, then sets initial $Q_1$ from the target glucose relation $Q_1=G_{target}V_GBW$.
 
@@ -594,37 +614,108 @@ $$
 
 ## 11) Rejection Criteria (Accepted Cohort)
 
-Patient/day trajectories are accepted only if all criteria hold:
+Three sequential stages. A patient is regenerated if any stage fails.
 
-- initial glucose within
-
-$$
-G_{init}\in [G_{init,min}, G_{init,max}]
-$$
-
-- instability constraints
+**Stage 1 — Initial-state:**
 
 $$
-\max(G) \le G_{max,instability}
+G_{init}\in [G_{init,min},\; G_{init,max}]
+$$
+
+**Stage 2 — Instability (evaluated over full horizon):**
+
+$$
+\max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}
+$$
+
+**Stage 3 — Quality (evaluated per recorded day):**
+
+Each recorded day $d$ with scenario $s_d$ is evaluated independently. Exercise scenarios ($s_d \in \{2,7,8,9\}$) use a relaxed hypo threshold because physiological hypoglycaemia during or after vigorous exercise is expected and handled by the rescue system:
+
+$$
+\%Hypo_d \le
+\begin{cases}
+\theta_{hypo,exercise} & \text{if } s_d \in \{2,7,8,9\} \\
+\theta_{hypo,quality}  & \text{otherwise}
+\end{cases}
 $$
 
 $$
-\%Hyper \le \theta_{hyper,instability}
+\%Hyper_d \le \theta_{hyper,quality} \quad \forall\, d
 $$
 
-- quality constraints
+**Hard glucose floor (any day, any scenario):**
 
 $$
-\%Hypo \le \theta_{hypo,quality}
+\min_t G(t) \ge G_{floor}
 $$
 
-$$
-\%Hyper \le \theta_{hyper,quality}
-$$
+A patient is rejected if any single day violates its threshold, or if glucose drops below the floor at any minute. This prevents deeply hypoglycaemic spikes from entering the accepted cohort even when the day-average hypo% would pass.
 
-All thresholds come from SimulationConfig.
+Default values: $\theta_{hypo,quality}=4\%$, $\theta_{hypo,exercise}=8\%$, $\theta_{hyper,quality}=12\%$, $\theta_{hyper,instability}=30\%$, $G_{floor}=3.0$ mmol/L. All thresholds are config-driven from `SimulationConfig`.
 
-## 12) Additional Utility Equations
+## 12) Monte Carlo Parameter Distributions
+
+Patient variability is introduced by sampling physiological parameters from published distributions. The following table documents base values, sampling distributions, and sources. Fixed parameters are the same for all patients; sampled parameters are drawn independently per patient.
+
+### 12.1 Hovorka core parameters
+
+| Parameter | Base value | Unit | MC distribution | Source / notes |
+| --- | --- | --- | --- | --- |
+| `MwG` | 180.16 | mg/mmol | Fixed | Molecular weight of glucose (C₆H₁₂O₆) |
+| `EGP0` | 0.0161 | mmol/kg/min | N(0.0161, 0.0039²) | Hovorka 2004, Table 1 |
+| `F01` | 0.0097 | mmol/kg/min | N(0.0097, 0.0022²) | Hovorka 2004, Table 1 |
+| `k12` | 0.0649 | 1/min | N(0.0649, 0.0282²) | Hovorka 2004, Table 1 |
+| `ka1` | 0.0055 | 1/min | N(0.0055, 0.0006²) | Hovorka 2004; CV reduced to ~10% (see note A) |
+| `ka2` | 0.0683 | 1/min | N(0.0683, 0.0068²) | Hovorka 2004; CV reduced to ~10% |
+| `ka3` | 0.0304 | 1/min | N(0.0304, 0.0030²) | Hovorka 2004; CV reduced to ~10% |
+| `SI1` | 32.0×10⁻⁴ | L/min/mU | N(32e-4, 20e-4²) | Scaled ~38% down from Hovorka 2004 (see note B) |
+| `SI2` | 5.1×10⁻⁴ | L/min/mU | N(5.1e-4, 4.9e-4²) | Hovorka 2004 / Boiroux thesis Table 2.1 |
+| `SI3` | 325×10⁻⁴ | L/mU | N(325e-4, 191e-4²) | Scaled ~37% down from Hovorka 2004 |
+| `ke` | 0.138 | 1/min | N(0.14, 0.035²) | Hovorka 2004; plasma insulin half-life ≈ 5 min |
+| `VI` | 0.12 | L/kg | N(0.12, 0.012²) | Hovorka 2004, Table 1 |
+| `VG` | 0.1484 | L/kg | log(exp(VG)) ~ N(1.16, 0.23²) | Hovorka 2004; exp(mean)=1.16 → VG=log(1.16)=0.148 |
+| `tauI` | 55.871 | min | 1/tauI ~ N(0.018, 0.0045²) | Hovorka 2004; mean rate 0.018 → tauI≈55.6 min |
+| `tauG` | 39.908 | min | ln(tauG) ~ N(3.689, 0.25²) | Hovorka 2004; exp(3.689)≈40 min |
+| `Ag` | 0.7943 | — | U(0.70, 0.90) | Physiological CHO bioavailability in T1D adults |
+| `BW` | 80.0 | kg | U(65, 95) | Adult T1D outpatient cohort; male-range centred |
+| `age_years` | 35.0 | years | N(35, 12²) clipped [18, 65] | Adult T1D population assumption |
+
+**Note A — ka variability reduction:** The Boiroux thesis reports CVs of ~100%, 74%, 77% for ka1/2/3 from a 7-patient cohort. Because the ODE uses $k_b = SI \cdot k_a$, sampling both SI and ka with high independent variance compounds the effective $k_b$ spread as $\sqrt{CV_{SI}^2 + CV_{ka}^2}$, producing physiologically implausible insulin action. CV is reduced to ~10% here, concentrating variability in SI (the clinically meaningful parameter), which better matches published ICR/ISF distributions (Dalla Man et al. 2007).
+
+**Note B — SI1/SI3 scaling:** The 7-patient Hovorka 2004 cohort had higher mean SI1 (~51×10⁻⁴) than the broader adult T1D population. Values are scaled down ~38% to target a mean ICR of ~12 g/U, consistent with Dalla Man et al. 2007 (IEEE TBME, Table II). Stds are scaled proportionally to preserve published CVs.
+
+### 12.2 ETH Deichmann exercise parameters
+
+Aerobic parameters are validated on 5 T1D children from the Basel University Children's Hospital (Deichmann et al. 2023, gitlab.com/csb.ethz/t1d-exercise-model). Anaerobic parameters are marked **EXPERIMENTAL** — not validated on T1D patients; values from `params_standard.csv`.
+
+| Parameter | Base value | Unit | MC distribution | Notes |
+| --- | --- | --- | --- | --- |
+| `eth_tau_AC` | 5.0 | min | Fixed | AC → Y time constant; consistent across all patient files |
+| `eth_tau_Z` | 600.0 | min | Fixed | Post-exercise SI decay (~10h); consistent across patients |
+| `eth_b` | 3.0×10⁻⁶ | 1/(count·min) | N(3e-6, 1e-6²) | Z drive; mean of patients 1–5 and T1D-V1 |
+| `eth_q1` | 1.0×10⁻⁶ | 1/(count·min²) | N(1e-6, 8e-7²) | rGU drive; mean of T1D patients |
+| `eth_q2` | 0.10 | 1/min | N(0.10, 0.08²) | rGU decay; mean of T1D patients |
+| `eth_q3l` | 3.0×10⁻⁷ | — | N(3e-7, 1.5e-7²) | rGP aerobic drive; mean of T1D patients |
+| `eth_q4l` | 0.060 | 1/min | N(0.060, 0.018²) | rGP aerobic decay; mean of T1D patients |
+| `eth_adepl` | 0.0108 | min/count | Fixed | Depletion threshold slope; fixed across patients |
+| `eth_bdepl` | 180.6 | count·min | Fixed | Depletion threshold intercept; fixed across patients |
+| `eth_aY` | 1500.0 | count·min | Fixed | fY half-saturation; fixed across patients |
+| `eth_aAC` | 1000.0 | count | Fixed | fAC onset; ~1000 counts ≈ moderate walking |
+| `eth_ah` | 5600.0 | count | Fixed | Anaerobic threshold; ~5600 counts ≈ high-intensity run |
+| `eth_n1` | 20.0 | — | Fixed | fY Hill coefficient; steep switch behaviour |
+| `eth_n2` | 100.0 | — | Fixed | fAC/fHI Hill coefficient; near-binary switch |
+| `eth_tp` | 2.0 | min | Fixed | fp half-saturation |
+| `eth_q3h` | 1.17×10⁻⁶ | — | Fixed (EXPERIMENTAL) | rGP anaerobic drive; params_standard.csv |
+| `eth_q4h` | 0.0705 | 1/min | Fixed (EXPERIMENTAL) | rGP anaerobic decay; params_standard.csv |
+| `eth_q5` | 0.03 | 1/min | Fixed (EXPERIMENTAL) | th decay rate; params_standard.csv |
+| `eth_q6` | 0.0 | 1/min | Fixed | Glycogen depletion rate; 0 for aerobic-only validated path |
+
+**Note on eth_n1/n2:** The very large Hill coefficients (20, 100) make the sigmoidal transfer functions behave as near-binary switches. This is intentional in the ETH formulation: $f_{AC}$ switches sharply at $a_{AC}=1000$ counts to mark the onset of activity, and $f_{HI}$ switches sharply at $a_h=5600$ counts to mark the anaerobic transition.
+
+**Note on eth_q6=0:** In the T1D-validated aerobic parameter files, $q_6=0$, meaning glycogen depletion ($rdepl$) is inactive and $\dot{rdepl}=0$ always. This is consistent with the observation that moderate aerobic exercise in T1D children does not produce significant glycogen depletion within typical session durations. The EXPERIMENTAL anaerobic path uses a non-zero $q_6$ for prolonged/intense sessions (scenario 7/8), but this pathway is not yet clinically validated.
+
+## 13) Additional Utility Equations
 
 - IOB from depot masses:
 

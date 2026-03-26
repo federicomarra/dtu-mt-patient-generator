@@ -23,10 +23,10 @@ from src.simulation_control import (
     count_correction_active_points,
     estimate_iob_from_state,
 )
+from src.sensor import measure_glycemia
 from src.simulation_utils import (
     clip_state_trajectory,
     create_export_directory,
-    generate_autocorrelated_noise,
     get_patient_color,
     measure_glycemia_day,
 )
@@ -109,8 +109,11 @@ def run_simulation(
     # Setup export directory
     now_sim_folder_path = create_export_directory() if any(export_config.to_list()) else None
 
-    # Generate an oversized candidate pool; keep first N stable patients
-    candidate_multiplier = 5
+    # Generate an oversized candidate pool; keep first N stable patients.
+    # 10× oversampling ensures the target count is met even at ~40% acceptance rates
+    # (typical for random-scenario runs). Increase further only if rejection rate
+    # consistently exceeds 90%, which indicates pathological threshold configuration.
+    candidate_multiplier = 10
     candidate_pool_size = max(config.n_patients * candidate_multiplier, config.n_patients)
     patients: list[ParameterSet] = generate_monte_carlo_patients(candidate_pool_size, standard_patient=config.std_patient, seed=config.random_seed)
 
@@ -286,7 +289,9 @@ def run_simulation(
             patient_correction_isf_active_points = 0
             patient_correction_isf_events = 0
             patient_correction_isf_units = 0.0
-            previous_noise_value: float | None = None
+            # Lagged CGM sensor state: carries the previous display value and AR(1) error
+            # across day boundaries so the noise process is continuous over the full horizon.
+            sensor_cgm_state: dict[str, float] = {}
             controller_state = ControllerState()
             # Per-day quality tracking: list of (scenario_id, hypo_pct, hyper_pct, min_glucose).
             # Rejection compares each day against its scenario-specific threshold so that
@@ -422,22 +427,32 @@ def run_simulation(
                     if np.isnan(day_cho[idx]):
                         day_cho[idx] = day_cho[idx - 1] if idx > 0 else 0.0
             
-                # Generate autocorrelated CGM noise for this day
-                noise_sequence = generate_autocorrelated_noise(
-                    n_measurements,
-                    config.noise_std,
-                    config.noise_autocorr,
-                    rng,
-                    initial_value=previous_noise_value,
-                )
-                previous_noise_value = float(noise_sequence[-1]) if noise_sequence.size > 0 else previous_noise_value
+                # Apply lagged CGM sensor model point-by-point.
+                # Each call to measure_glycemia (mode="lagged") applies:
+                #   1. First-order CGM physiological lag:
+                #      G_lag(t) = G_disp(t-1) + α_lag * (G_true(t) - G_disp(t-1))
+                #   2. AR(1) correlated noise:
+                #      e_t = φ * e_{t-1} + η_t,  η_t ~ N(0, σ²(1-φ²))
+                #      G_meas(t) = G_lag(t) + e_t
+                # sensor_cgm_state carries display/error across day boundaries.
+                available_points = min(n_measurements, state_trajectory.shape[1])
+                glycemia_day_array = np.zeros(n_measurements, dtype=np.float64)
+                for _pt in range(available_points):
+                    glycemia_day_array[_pt] = measure_glycemia(
+                        state_trajectory[:, _pt],
+                        patient_params,
+                        noise_std=config.noise_std,
+                        mode="lagged",
+                        phi=config.noise_autocorr,
+                        lag_alpha=config.cgm_lag_alpha,
+                        sensor_state=sensor_cgm_state,
+                        rng=rng,
+                        output_unit="mmol/L",
+                        min_glucose=0.0,
+                    )
+                if available_points < n_measurements:
+                    glycemia_day_array[available_points:] = glycemia_day_array[available_points - 1]
 
-                glycemia_day_array = measure_glycemia_day(
-                    state_trajectory=state_trajectory,
-                    patient_params=patient_params,
-                    noise_sequence=noise_sequence,
-                    n_measurements=n_measurements,
-                )
                 glycemia_day_physio = measure_glycemia_day(
                     state_trajectory=state_trajectory,
                     patient_params=patient_params,
@@ -518,17 +533,26 @@ def run_simulation(
                 del results_tot[sim_patient_id]
                 continue
             # Quality: per-day scenario-aware rejection.
-            # Each day is compared against the threshold for its own scenario so that
-            # exercise days tolerate higher hypo% regardless of random vs fixed mode.
+            # Base threshold depends on the day's own scenario (exercise days use the looser
+            # exercise threshold). A +spillover_bonus is added when the *previous* recorded day
+            # was an exercise scenario, because the Z state (tau_Z≈600 min) remains partially
+            # active the next morning and increases hypo risk even on non-exercise days.
+            # Back-to-back exercise days stack: exercise→exercise = 8%+2% = 10%.
             # Also enforce a hard minimum glucose floor across all days.
             _quality_hypo_fail  = False
             _quality_hyper_fail = False
             _quality_floor_fail = False
-            for _scen_id, _day_hypo, _day_hyper, _day_min in per_day_quality:
-                _day_hypo_thresh = (
+            for _day_i, (_scen_id, _day_hypo, _day_hyper, _day_min) in enumerate(per_day_quality):
+                _prev_was_exercise = (
+                    _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
+                )
+                _base_hypo_thresh = (
                     config.quality_max_hypo_pct_exercise_threshold
                     if _scen_id in _EXERCISE_SCENARIO_IDS
                     else quality_max_hypo_pct
+                )
+                _day_hypo_thresh = _base_hypo_thresh + (
+                    config.quality_max_hypo_pct_spillover_bonus if _prev_was_exercise else 0.0
                 )
                 if _day_hypo > _day_hypo_thresh:
                     _quality_hypo_fail = True

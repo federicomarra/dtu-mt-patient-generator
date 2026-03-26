@@ -12,7 +12,8 @@ class SimulationConfig:
     n_days: int = 7
     international_unit: bool = True
     noise_std: float = 0.10
-    noise_autocorr: float = 0.7
+    noise_autocorr: float = 0.7   # AR(1) φ coefficient for the lagged CGM noise model
+    cgm_lag_alpha: float = 0.25   # first-order CGM lag blend factor (0 < α ≤ 1); 0.25 ≈ 4-min physiological lag
     random_scenarios: bool = False
     fixed_scenario: int = 1
     clip_states: bool = True
@@ -39,6 +40,12 @@ class SimulationConfig:
     # cohort generation and should be reported as such in validation experiments.
     quality_max_hypo_pct_threshold: float = 4.0
     quality_max_hypo_pct_exercise_threshold: float = 8.0
+    # Bonus added to the hypo threshold of a day that immediately follows an exercise day
+    # (scenarios 2,7,8,9). The Z state (post-exercise insulin sensitivity, tau_Z≈600 min)
+    # remains partially active the next morning, so the threshold is relaxed by this delta
+    # on top of the day's own base threshold. Back-to-back exercise days stack correctly:
+    # exercise→exercise gives 8%+2%=10%; exercise→normal gives 4%+2%=6%.
+    quality_max_hypo_pct_spillover_bonus: float = 2.0
     quality_max_hyper_pct_threshold: float = 12.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Prevents deeply hypoglycaemic spikes in accepted patients (e.g. 2.3 mmol/L).

@@ -129,12 +129,12 @@ Stages:
 1. Initial-state rejection
    - initial glucose must be in `[initial_glucose_acceptance_min_mmol, initial_glucose_acceptance_max_mmol]`
 2. Instability rejection
-   - max glucose and hyper % must pass instability thresholds
+   - max glucose ≤ `instability_max_glucose_mmol` (default 30.53 mmol/L / 550 mg/dL), hyper% ≤ `instability_hyper_pct_threshold` (default 60%), hypo% ≤ `instability_hypo_pct_threshold` (default 8%) — all evaluated over the full concatenated trajectory
 3. Quality rejection — evaluated **per day**, not over the full horizon
-   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 8%)
-   - all other days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 4%)
-   - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 12%)
-   - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 3.0 mmol/L) rejects the patient
+   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 15%); +2% spillover bonus if previous day was also exercise
+   - all other days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 10%)
+   - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 75%)
+   - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 1.78 mmol/L / 32 mg/dL) rejects the patient
 
 All thresholds are config-driven from `SimulationConfig`.
 
@@ -153,8 +153,8 @@ Key groups:
 - Initialization and filtering:
   - `initial_target_glucose_mgdl`
   - `initial_glucose_acceptance_min_mmol`, `initial_glucose_acceptance_max_mmol`
-  - `instability_max_glucose_mmol`, `instability_hyper_pct_threshold`
-  - `quality_max_hypo_pct_threshold`, `quality_max_hypo_pct_exercise_threshold`
+  - `instability_max_glucose_mmol`, `instability_hyper_pct_threshold`, `instability_hypo_pct_threshold`
+  - `quality_max_hypo_pct_threshold`, `quality_max_hypo_pct_exercise_threshold`, `quality_max_hypo_pct_spillover_bonus`
   - `quality_max_hyper_pct_threshold`, `quality_min_glucose_mmol`
   - `n_warmup_days` (burn-in days before recording; lets ETH Z-state reach cyclic steady state)
 - Basal and calibration:

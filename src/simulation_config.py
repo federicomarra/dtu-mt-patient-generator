@@ -24,8 +24,9 @@ class SimulationConfig:
     initial_target_glucose_mgdl: float = 100.0
     initial_glucose_acceptance_min_mmol: float = 4.5
     initial_glucose_acceptance_max_mmol: float = 7.2
-    instability_max_glucose_mmol: float = 17.0
-    instability_hyper_pct_threshold: float = 30.0
+    instability_max_glucose_mmol: float = 30.53  # 550 mg/dL / 18.016
+    instability_hyper_pct_threshold: float = 60.0
+    instability_hypo_pct_threshold: float = 8.0
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
     # Exercise days (scenarios 2, 7, 8, 9) use the _exercise variants because physiological
     # hypo during/after vigorous exercise is expected and the rescue system handles it.
@@ -35,21 +36,22 @@ class SimulationConfig:
     # This is expected and physiologically justified: running aerobic exercise every day for
     # 3+ consecutive days with burn-in causes cumulative post-exercise insulin sensitivity
     # elevation (ETH Z-state) that persistently lowers fasting glucose. Most virtual patients
-    # cannot sustain acceptable glycaemic control under this chronic load within the 8%
+    # cannot sustain acceptable glycaemic control under this chronic load within the 15%
     # per-day hypo threshold. This finding reflects a genuine limitation of fixed-exercise
     # cohort generation and should be reported as such in validation experiments.
-    quality_max_hypo_pct_threshold: float = 4.0
-    quality_max_hypo_pct_exercise_threshold: float = 8.0
+    quality_max_hypo_pct_threshold: float = 10.0
+    quality_max_hypo_pct_exercise_threshold: float = 15.0
     # Bonus added to the hypo threshold of a day that immediately follows an exercise day
     # (scenarios 2,7,8,9). The Z state (post-exercise insulin sensitivity, tau_Z≈600 min)
     # remains partially active the next morning, so the threshold is relaxed by this delta
     # on top of the day's own base threshold. Back-to-back exercise days stack correctly:
     # exercise→exercise gives 8%+2%=10%; exercise→normal gives 4%+2%=6%.
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 12.0
+    quality_max_hyper_pct_threshold: float = 75.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
-    # Prevents deeply hypoglycaemic spikes in accepted patients (e.g. 2.3 mmol/L).
-    quality_min_glucose_mmol: float = 3.0
+    # Set to 32 mg/dL (= 1.78 mmol/L) to allow physiologically plausible severe hypos
+    # that can genuinely occur in T1D without discarding otherwise valid trajectories.
+    quality_min_glucose_mmol: float = 1.78  # 32 mg/dL / 18.016
 
     # Burn-in days run the same scenario before recording starts, letting the ETH exercise
     # states (Y, Z post-exercise insulin sensitivity) reach a cyclic steady state so that

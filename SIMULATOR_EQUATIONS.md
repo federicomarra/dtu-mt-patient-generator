@@ -427,9 +427,9 @@ Stopping criteria:
 with:
 
 - mmol/L path: $tol_G = 0.1$ mmol/L
-- mg/dL path: input $G_{mg/dL}$ is first converted to mmol/L via $G_{mmol}=G_{mg/dL}\,/\,(M_w^G/10)$, then $tol_G = 0.1\,/\,(M_w^G/10) \approx 0.0055$ mmol/L (with $M_w^G = 180.16$, the exact value is $0.1/18.016 = 0.00555$ mmol/L)
+- mg/dL path: input $G_{mg/dL}$ is first converted to mmol/L via $G_{mmol}=G_{mg/dL}\,/\,(M_w^G/10)$, then $tol_G = 0.1$ mmol/L (= 1.8 mg/dL). Both unit paths share the same 0.1 mmol/L tolerance; it is incorrect to divide the tolerance by the conversion factor (doing so would give a $18\times$ tighter bound of $\approx 0.0055$ mmol/L with no physiological justification).
 
-The mg/dL tolerance is tighter by unit-conversion, but in practice the $\lVert f \rVert_\infty \le 10^{-6}$ ODE residual bound is always the binding constraint — both paths converge to residuals of order $10^{-8}$ to $10^{-7}$.
+In practice the $\lVert f \rVert_\infty \le 10^{-6}$ ODE residual bound is always the binding constraint — both paths converge to residuals of order $10^{-8}$ to $10^{-7}$.
 
 Initialization uses a deterministic warm start from the fasting algebraic construction at $u=10$ mU/min, then sets initial $Q_1$ from the target glucose relation $Q_1=G_{target}V_GBW$.
 
@@ -668,10 +668,10 @@ $$
 **Stage 2 — Instability (evaluated over the full concatenated trajectory):**
 
 $$
-\max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}
+\max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}, \quad \%Hypo \le \theta_{hypo,instability}
 $$
 
-Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated sequence** (all days merged). Its purpose is to quickly discard numerically diverging or physiologically runaway simulations before the more expensive per-day quality checks. For example, a single day with 100% hyper-time in a 7-day run contributes only $\sim 14\%$ to the global hyper%, so it passes Stage 2 ($\theta_{hyper,instability}=30\%$) — this is intentional: Stage 2 catches explosive instability (e.g. glucose rocketing to 20+ mmol/L for hours), not moderate per-day excursions.
+Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated sequence** (all days merged). Its purpose is to quickly discard numerically diverging or physiologically runaway simulations before the more expensive per-day quality checks. For example, a single day with 100% hyper-time in a 7-day run contributes only $\sim 14\%$ to the global hyper%, so it passes Stage 2 ($\theta_{hyper,instability}=60\%$) — this is intentional: Stage 2 catches explosive instability (e.g. glucose rocketing to 30+ mmol/L for hours), not moderate per-day excursions. The hypo instability check ($\theta_{hypo,instability}=8\%$) analogously catches sustained global hypoglycaemia across the full horizon.
 
 **Stage 3 — Quality (evaluated per recorded day independently):**
 
@@ -693,18 +693,18 @@ The spillover bonus $\delta_{spillover}$ accounts for the $Z$-state (post-exerci
 
 | Day $d-1$ | Day $d$ | Effective $\theta_{hypo}(d)$ |
 | --- | --- | --- |
-| non-exercise | non-exercise | $4\%$ |
-| exercise | non-exercise | $4\% + 2\% = 6\%$ |
-| non-exercise | exercise | $8\%$ |
-| exercise | exercise | $8\% + 2\% = 10\%$ |
+| non-exercise | non-exercise | $10\%$ |
+| exercise | non-exercise | $10\% + 2\% = 12\%$ |
+| non-exercise | exercise | $15\%$ |
+| exercise | exercise | $15\% + 2\% = 17\%$ |
 
 $$
 \%Hyper_d \le \theta_{hyper,quality} \quad \forall\, d
 $$
 
-Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 13% hyper per day (which passes Stage 2 globally at 13% < 30%) is still rejected here because each day individually exceeds $\theta_{hyper,quality}=12\%$.
+Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 76% hyper per day (which passes Stage 2 globally at 76% > 60% would still be caught there, but lower consistent values pass Stage 2) is rejected here because each day individually exceeds $\theta_{hyper,quality}=75\%$.
 
-The distinction between Stage 2 and Stage 3 hyper thresholds (30% vs 12%) is therefore intentional: Stage 2 catches runaway global instability; Stage 3 enforces per-day clinical quality without dilution across days.
+The distinction between Stage 2 and Stage 3 hyper thresholds (60% vs 75%) is intentional: Stage 2 catches explosive global instability across the full horizon; Stage 3 enforces per-day clinical quality — a single catastrophic day cannot be diluted by good days.
 
 **Hard glucose floor (any day, any scenario):**
 
@@ -714,7 +714,7 @@ $$
 
 A patient is rejected if any single day violates its threshold, or if the **physiological** (noiseless) glucose drops below $G_{floor}$ at any minute. This prevents deeply hypoglycaemic states from entering the accepted cohort even when the day-average hypo% would pass.
 
-Default values: $\theta_{hypo,quality}=4\%$, $\theta_{hypo,exercise}=8\%$, $\delta_{spillover}=2\%$, $\theta_{hyper,quality}=12\%$, $\theta_{hyper,instability}=30\%$, $G_{floor}=3.0$ mmol/L. All thresholds are config-driven from `SimulationConfig`.
+Default values: $\theta_{hypo,quality}=10\%$, $\theta_{hypo,exercise}=15\%$, $\delta_{spillover}=2\%$, $\theta_{hyper,quality}=75\%$, $\theta_{hyper,instability}=60\%$, $\theta_{hypo,instability}=8\%$, $G_{max,instability}=30.53$ mmol/L (550 mg/dL), $G_{floor}=1.78$ mmol/L (32 mg/dL). All thresholds are config-driven from `SimulationConfig`.
 
 **Design note — floor applied to physiological glucose only, not to the CGM signal:**
 

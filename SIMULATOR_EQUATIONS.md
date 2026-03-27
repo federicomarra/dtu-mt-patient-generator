@@ -48,18 +48,18 @@ Per minute, the input layer provides:
 Carbohydrate conversion used in model:
 
 $$
-D(t) = \frac{D_{mg}(t)}{M_w^G}
+D(t) = \frac{D_{mg}(t)}{M_{wG}}
 $$
 
-with $M_w^G$ in [mg/mmol], so $D(t)$ is [mmol/min].
+with $M_{wG}$ in [mg/mmol], so $D(t)$ is [mmol/min].
 
 Basal conversion:
 
 $$
-U_{basal} = \frac{U_{hr} \cdot 1000}{60}
+U(t) = \frac{U_{hr} \cdot 1000}{60}
 $$
 
-where $U_{hr}$ is [U/hr], $U_{basal}$ is [mU/min].
+where $U_{hr}$ is [U/hr], $U(t)$ is [mU/min].
 
 ## 3) Hovorka Core ODEs
 
@@ -98,7 +98,7 @@ U_I = \frac{1}{\tau_I}S_2
 $$
 
 $$
-\dot I = \frac{U_I}{V_I \cdot BW} - k_e I
+\dot I = \frac{U_I}{V_I \cdot BW} - k_e\cdot I
 $$
 
 ### 3.3 Non-insulin glucose utilization and renal clearance

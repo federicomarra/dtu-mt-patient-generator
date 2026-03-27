@@ -147,6 +147,7 @@ def run_simulation(
     )
     instability_max_glucose_mmol = config.instability_max_glucose_mmol
     instability_hyper_pct = config.instability_hyper_pct_threshold
+    instability_hypo_pct = config.instability_hypo_pct_threshold
     quality_max_hypo_pct = config.quality_max_hypo_pct_threshold
     quality_max_hyper_pct = config.quality_max_hyper_pct_threshold
 
@@ -527,7 +528,13 @@ def run_simulation(
                 100.0 * int(np.sum(patient_full_trajectory_physio_concat > 10.0)) / total_count
                 if total_count > 0 else 0.0
             )
-            if total_hyper_pct > instability_hyper_pct or max_glucose > instability_max_glucose_mmol:
+            total_hypo_pct = (
+                100.0 * int(np.sum(patient_full_trajectory_physio_concat < 3.9)) / total_count
+                if total_count > 0 else 0.0
+            )
+            if (total_hyper_pct > instability_hyper_pct
+                    or total_hypo_pct > instability_hypo_pct
+                    or max_glucose > instability_max_glucose_mmol):
                 rejected_patients += 1
                 rejected_instability += 1
                 del results_tot[sim_patient_id]

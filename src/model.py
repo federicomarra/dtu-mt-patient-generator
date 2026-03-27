@@ -285,9 +285,9 @@ def _convert_target_glucose_to_mmol(
 
     if international_units:
         return target_mmol, 0.1
-    # Convert 0.1 mg/dL tolerance to mmol/L by dividing by the unit-conversion factor.
-    tolerance = 0.1 / (params["MwG"] / 10.0)
-    return target_mmol / (params["MwG"] / 10.0), tolerance
+    # mg/dL path: convert target to mmol/L; tolerance stays at 0.1 mmol/L (= 1.8 mg/dL).
+    # Dividing by MwG/10 would give 0.0055 mmol/L — 18× too tight and physically meaningless.
+    return target_mmol / (params["MwG"] / 10.0), 0.1
 
 
 def _steady_state_input_stub(*_: object, **__: object) -> InputValues:

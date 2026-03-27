@@ -238,6 +238,32 @@ def analyze_results(file_path: Path) -> None:
             hyper = 100 * float((day_df['blood_glucose'] > hyper_threshold).sum()) / len(day_df)  # type: ignore[arg-type]
             print(f'{day:<5} {tir:11.1f}% {hypo:9.1f}% {hyper:9.1f}%')
     
+    # Per-scenario breakdown (ML label validation)
+    if 'scenario_id' in df.columns and df['scenario_id'].notna().any():
+        scenario_names = {
+            1: "normal",
+            2: "active (aerobic)",
+            3: "sedentary",
+            4: "long lunch",
+            5: "missed bolus",
+            6: "late bolus",
+            7: "prolonged aerobic",
+            8: "anaerobic",
+            9: "exercise+missed bolus",
+        }
+        print('\n=== Per-Scenario Glycemic Profile ===')
+        print(f"{'Scen':<5} {'Name':<24} {'Days':>5} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
+        print('-' * 62)
+        for sid in sorted(df['scenario_id'].dropna().unique()):
+            s_df = df[df['scenario_id'] == sid]
+            n_days = int(s_df.groupby(['patient_id', 'day']).ngroups) if 'day' in df.columns else '-'
+            tir = 100 * float(((s_df['blood_glucose'] >= hypo_threshold) & (s_df['blood_glucose'] <= hyper_threshold)).sum()) / len(s_df)
+            hypo = 100 * float((s_df['blood_glucose'] < hypo_threshold).sum()) / len(s_df)
+            hyper = 100 * float((s_df['blood_glucose'] > hyper_threshold).sum()) / len(s_df)
+            mean_g = float(s_df['blood_glucose'].mean())
+            name = scenario_names.get(int(sid), f"scenario {int(sid)}")
+            print(f"{int(sid):<5} {name:<24} {n_days:>5} {tir:>6.1f}% {hypo:>6.1f}% {hyper:>6.1f}% {mean_g:>7.2f}")
+
     print(f"\n{'='*70}\n")
 
 

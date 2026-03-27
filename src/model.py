@@ -5,7 +5,7 @@ from typing import Callable
 
 import numpy as np
 
-from src.hovorka_exercise import compute_rashid_terms
+from src.hovorka_exercise import compute_eth_exercise_terms
 from src.sensor import measure_glycemia
 
 ParameterSet = dict[str, float]
@@ -20,7 +20,7 @@ ObservableCallback = Callable[[np.ndarray, ParameterSet], float]
 
 
 _HOVORKA_BASE_STATE_COUNT = 10
-_HOVORKA_STATE_COUNT = 13
+_HOVORKA_STATE_COUNT = 18  # 10 base + 8 ETH exercise states (Y, Z, rGU, rGP, tPA, PAint, rdepl, th)
 
 
 @dataclass(frozen=True)
@@ -42,31 +42,39 @@ def state_listify(
     x3: float,
     D1: float,
     D2: float,
-    E1: float = 0.0,
-    E2: float = 0.0,
-    TE: float = 0.0,
+    # ETH exercise states (indices 10-17); default to zero (fasting/rest)
+    Y: float = 0.0,      # short-term PA insulin sensitivity accumulator
+    Z: float = 0.0,      # long-term post-exercise SI elevation
+    rGU: float = 0.0,    # exercise glucose utilization rate [1/min]
+    rGP: float = 0.0,    # exercise glucose production rate [1/min]
+    tPA: float = 0.0,    # PA tracking state
+    PAint: float = 0.0,  # cumulative PA intensity integral [count·min]
+    rdepl: float = 0.0,  # glycogen depletion rate [1/min]
+    th: float = 0.0,     # high-intensity duration accumulator
 ) -> list[float]:
-    return [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2, E1, E2, TE]
+    return [Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2, Y, Z, rGU, rGP, tPA, PAint, rdepl, th]
 
 
 def state_unlistify(
     x: StateVector,
-) -> tuple[float, float, float, float, float, float, float, float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float, float, float, float,
+           float, float, float, float, float, float, float, float]:
     if len(x) == _HOVORKA_BASE_STATE_COUNT:
         q1, q2, s1, s2, i, x1, x2, x3, d1, d2 = x
-        return q1, q2, s1, s2, i, x1, x2, x3, d1, d2, 0.0, 0.0, 0.0
+        return q1, q2, s1, s2, i, x1, x2, x3, d1, d2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if len(x) != _HOVORKA_STATE_COUNT:
         raise ValueError(f"Expected {_HOVORKA_BASE_STATE_COUNT} or {_HOVORKA_STATE_COUNT} Hovorka states, got {len(x)}")
-    q1, q2, s1, s2, i, x1, x2, x3, d1, d2, e1, e2, te = x
-    return q1, q2, s1, s2, i, x1, x2, x3, d1, d2, e1, e2, te
+    q1, q2, s1, s2, i, x1, x2, x3, d1, d2, Y, Z, rGU, rGP, tPA, PAint, rdepl, th = x
+    return q1, q2, s1, s2, i, x1, x2, x3, d1, d2, Y, Z, rGU, rGP, tPA, PAint, rdepl, th
 
 
 def _parse_input_values(values: InputValues) -> tuple[float, float, float]:
+    """Parse (u, d) or (u, d, ac) input tuple. Third element is AC [counts] for the ETH model."""
     if len(values) == 2:
         u_t, d_t = values
         return float(u_t), float(d_t), 0.0
-    u_t, d_t, delta_hr_t = values
-    return float(u_t), float(d_t), float(delta_hr_t)
+    u_t, d_t, ac_t = values
+    return float(u_t), float(d_t), float(ac_t)
 
 
 def _get_input_values(
@@ -77,7 +85,6 @@ def _get_input_values(
     day: int,
     basal_hourly: float,
     insulin_carbo_ratio: float,
-    patient_age_years: float,
     meal_schedule: dict[str, float] | None,
     seed: int | None,
     precomputed_inputs: InputValues | None,
@@ -93,7 +100,6 @@ def _get_input_values(
                 basal_hourly=basal_hourly,
                 scenario=scenario,
                 insulin_carbo_ratio=insulin_carbo_ratio,
-                patient_age_years=patient_age_years,
                 seed=seed,
             )
         )
@@ -105,7 +111,6 @@ def _get_input_values(
             basal_hourly=basal_hourly,
             scenario=scenario,
             insulin_carbo_ratio=insulin_carbo_ratio,
-            patient_age_years=patient_age_years,
             meal_schedule=meal_schedule,
             seed=seed,
         )
@@ -122,12 +127,11 @@ def hovorka_equations(
     day: int = 0,
     basal_hourly: float = 0.5,
     insulin_carbo_ratio: float = 2.0,
-    patient_age_years: float = 35.0,
     meal_schedule: dict[str, float] | None = None,
     seed: int | None = None,
     precomputed_inputs: InputValues | None = None,
 ) -> StateVector:
-    Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2, E1, E2, TE = state_unlistify(list(x))
+    Q1, Q2, S1, S2, I, x1, x2, x3, D1, D2, Y, Z, rGU, rGP, tPA, PAint, rdepl, th = state_unlistify(list(x))
 
     EGP0 = float(params["EGP0"])
     F01 = float(params["F01"])
@@ -146,7 +150,7 @@ def hovorka_equations(
     Ag = float(params["Ag"])
     BW = float(params["BW"])
 
-    u_t, d_t, delta_hr_t = _get_input_values(
+    u_t, d_t, ac_t = _get_input_values(
         t=t,
         input_func=input_func,
         scenario=scenario,
@@ -154,7 +158,6 @@ def hovorka_equations(
         day=day,
         basal_hourly=basal_hourly,
         insulin_carbo_ratio=insulin_carbo_ratio,
-        patient_age_years=patient_age_years,
         meal_schedule=meal_schedule,
         seed=seed,
         precomputed_inputs=precomputed_inputs,
@@ -190,37 +193,42 @@ def hovorka_equations(
     dx2 = kb2 * I - ka2 * x2
     dx3 = kb3 * I - ka3 * x3
 
-    dE1 = 0.0
-    dE2 = 0.0
-    dTE = 0.0
-
-    # Exercise terms from A.16-A.19 and A.23-A.24.
-    rashid = compute_rashid_terms(
-        E1=E1,
-        E2=E2,
-        TE=TE,
-        delta_hr_t=delta_hr_t,
+    # ETH Deichmann exercise model — replaces Rashid HR-based states.
+    # Input: ac_t [accelerometer counts] instead of delta_hr_t.
+    eth = compute_eth_exercise_terms(
+        Y=Y, Z=Z, rGU=rGU, rGP=rGP,
+        tPA=tPA, PAint=PAint, rdepl=rdepl, th=th,
+        ac_t=ac_t,
         x1=x1,
-        x2=x2,
         Q1=Q1,
-        Q2=Q2,
         params=params,
     )
-    dE1 = float(rashid["dE1"])
-    dE2 = float(rashid["dE2"])
-    dTE = float(rashid["dTE"])
-    QE1 = float(rashid["QE1"])
-    QE21 = float(rashid["QE21"])
-    QE22 = float(rashid["QE22"])
+    dY     = float(eth["dY"])
+    dZ     = float(eth["dZ"])
+    drGU   = float(eth["drGU"])
+    drGP   = float(eth["drGP"])
+    dtPA   = float(eth["dtPA"])
+    dPAint = float(eth["dPAint"])
+    drdepl = float(eth["drdepl"])
+    dth    = float(eth["dth"])
 
-    # Glucose model terms in figure notation.
-    R12 = (x1 * Q1) - (k12 * Q2)
-    R2 = x2 * Q2
+    # Hovorka glucose compartment terms
+    R12  = (x1 * Q1) - (k12 * Q2)
+    R2   = x2 * Q2
     EGPc = EGP0 * BW * max(0.0, 1.0 - x3)
 
-    dQ1 = UG + EGPc - R12 - F01c - fr - QE21
-    dQ2 = R12 - R2 + QE21 - QE22 - QE1
-    return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2, dE1, dE2, dTE]
+    # ETH exercise contributions grafted onto Q1:
+    #   exercise_uptake — insulin-independent glucose disposal during exercise
+    #   exercise_prod   — net EGP boost (reduced by glycogen depletion for prolonged sessions)
+    #   exercise_si     — post-exercise enhanced insulin sensitivity (Z amplifies x1)
+    dQ1 = UG + EGPc - R12 - F01c - fr \
+          - float(eth["exercise_uptake"]) \
+          + float(eth["exercise_prod"]) \
+          - float(eth["exercise_si"])
+    dQ2 = R12 - R2
+
+    return [dQ1, dQ2, dS1, dS2, dI, dx1, dx2, dx3, dD1, dD2,
+            dY, dZ, drGU, drGP, dtPA, dPAint, drdepl, dth]
 
 
 def compute_fasting_steady_state_from_basal_insulin(u_mu: float, params: ParameterSet) -> StateVector:
@@ -250,6 +258,7 @@ def compute_fasting_steady_state_from_basal_insulin(u_mu: float, params: Paramet
     except np.linalg.LinAlgError:
         q, *_ = np.linalg.lstsq(A, b, rcond=None)
 
+    # ETH exercise states are all zero at fasting (no physical activity)
     return state_listify(
         Q1=max(0.0, float(q[0])),
         Q2=max(0.0, float(q[1])),
@@ -261,7 +270,7 @@ def compute_fasting_steady_state_from_basal_insulin(u_mu: float, params: Paramet
         x3=x3eq,
         D1=0.0,
         D2=0.0,
-    )
+    )  # Y, Z, rGU, rGP, tPA, PAint, rdepl, th default to 0.0
 
 
 def _convert_target_glucose_to_mmol(
@@ -276,7 +285,8 @@ def _convert_target_glucose_to_mmol(
 
     if international_units:
         return target_mmol, 0.1
-    tolerance = 0.1 * (params["MwG"] / 10.0)
+    # Convert 0.1 mg/dL tolerance to mmol/L by dividing by the unit-conversion factor.
+    tolerance = 0.1 / (params["MwG"] / 10.0)
     return target_mmol / (params["MwG"] / 10.0), tolerance
 
 
@@ -377,151 +387,122 @@ def _compute_hovorka_analytical_jacobian(
     params: ParameterSet,
     __: float,
 ) -> np.ndarray:
+    """Analytical Jacobian of the 18-state Hovorka + ETH exercise system.
+
+    This Jacobian is evaluated exclusively at the fasting steady state (no exercise,
+    AC=0), where all 8 ETH exercise states (Y…th) are zero. At rest the ETH states
+    decouple from the Hovorka core: their ODE rows are diagonal with negative
+    self-derivatives, and they contribute no terms to the Q1/Q2 rows.
+    The resulting 19×19 matrix therefore has the same top-left 10×10 Hovorka
+    block as before, plus an 8×8 diagonal block for the exercise states.
+    """
     projected_z = _project_hovorka_variables(z)
     state = projected_z[:-1]
 
-    q1, q2, _s1, _s2, _i, x1, x2, x3, _d1, _d2, e1, e2, te = state_unlistify(list(float(v) for v in state))
+    q1, q2, _s1, _s2, _i, x1, x2, x3, _d1, _d2, \
+        _Y, _Z, _rGU, _rGP, _tPA, _PAint, _rdepl, _th = state_unlistify(
+            list(float(v) for v in state)
+        )
 
-    bw = float(params["BW"])
-    vg = float(params["VG"])
-    vi = float(params["VI"])
-    tau_i = float(params["tauI"])
-    tau_g = float(params["tauG"])
-    ke = float(params["ke"])
-    ka1 = float(params["ka1"])
-    ka2 = float(params["ka2"])
-    ka3 = float(params["ka3"])
-    si1 = float(params["SI1"])
-    si2 = float(params["SI2"])
-    si3 = float(params["SI3"])
-    k12 = float(params["k12"])
-    egp0 = float(params["EGP0"])
-    f01 = float(params["F01"])
+    bw      = float(params["BW"])
+    vg      = float(params["VG"])
+    vi      = float(params["VI"])
+    tau_i   = float(params["tauI"])
+    tau_g   = float(params["tauG"])
+    ke      = float(params["ke"])
+    ka1     = float(params["ka1"])
+    ka2     = float(params["ka2"])
+    ka3     = float(params["ka3"])
+    si1     = float(params["SI1"])
+    si2     = float(params["SI2"])
+    si3     = float(params["SI3"])
+    k12     = float(params["k12"])
+    egp0    = float(params["EGP0"])
+    f01     = float(params["F01"])
+    tau_AC  = max(1.0, float(params["eth_tau_AC"]))
+    tau_Z   = max(1.0, float(params["eth_tau_Z"]))
+    q2_eth  = max(0.0, float(params["eth_q2"]))   # rGU decay rate
+    q4l_eth = max(0.0, float(params["eth_q4l"]))  # rGP aerobic decay (dominant at rest)
+    q5_eth  = max(0.0, float(params["eth_q5"]))   # th decay rate (EXPERIMENTAL)
+    q6_eth  = max(0.0, float(params["eth_q6"]))   # glycogen depletion decay rate
 
-    tau_hr = max(1.0, float(params["rashid_tau_hr"]))
-    tau_ex = max(1.0, float(params["rashid_tau_ex"]))
-    tau_in = max(1.0, float(params["rashid_tau_in"]))
-    c1 = float(params["rashid_c1"])
-    c2 = float(params["rashid_c2"])
-    alpha_ex = max(1e-6, float(params["rashid_alpha"]))
-    beta = max(0.0, float(params["rashid_beta"]))
-    hr0 = max(1e-6, float(params["rashid_hr0"]))
-    n = max(1.0, float(params["rashid_n"]))
-
-    vg_bw = vg * bw
+    vg_bw     = vg * bw
     inv_tau_i = 1.0 / tau_i
     inv_tau_g = 1.0 / tau_g
     inv_vi_bw = 1.0 / (vi * bw)
 
     glucose = q1 / vg_bw if vg_bw > 0.0 else 0.0
 
-    if glucose >= 4.5:
-        d_f01c_d_q1 = 0.0
-    else:
-        d_f01c_d_q1 = f01 / (4.5 * vg)
-
-    d_fr_d_q1 = 0.003 if glucose >= 9.0 else 0.0
+    d_f01c_d_q1 = 0.0 if glucose >= 4.5 else f01 / (4.5 * vg)
+    d_fr_d_q1   = 0.003 if glucose >= 9.0 else 0.0
     d_egpc_d_x3 = -egp0 * bw if x3 < 1.0 else 0.0
 
-    e1_scale = max(1e-6, alpha_ex * hr0)
-    e1_ratio = max(0.0, e1) / e1_scale
-    f_e1_num = e1_ratio**n
-    if e1 > 0.0:
-        d_f_e1_num_d_e1 = n * (e1_ratio ** (n - 1.0)) / e1_scale
-        d_f_e1_d_e1 = d_f_e1_num_d_e1 / ((1.0 + f_e1_num) ** 2)
-    else:
-        d_f_e1_d_e1 = 0.0
+    # 19×19: 18 state rows + 1 glucose residual row, columns = 18 states + u
+    jacobian = np.zeros((19, 19), dtype=np.float64)
 
-    f_e1 = f_e1_num / (1.0 + f_e1_num)
+    idx_q1, idx_q2           = 0, 1
+    idx_s1, idx_s2           = 2, 3
+    idx_i                    = 4
+    idx_x1, idx_x2, idx_x3  = 5, 6, 7
+    idx_d1, idx_d2           = 8, 9
+    # ETH exercise state indices
+    idx_Y, idx_Z             = 10, 11
+    idx_rGU, idx_rGP         = 12, 13
+    idx_tPA, idx_PAint       = 14, 15
+    idx_rdepl, idx_th        = 16, 17
+    idx_u                    = 18
 
-    te_safe = max(1e-6, te)
-    d_te_safe_d_te = 1.0 if te > 1e-6 else 0.0
-    c_sum_safe = max(1e-6, c1 + c2)
+    # --- Hovorka core block (unchanged from base model) ---
 
-    a_term = (f_e1 / tau_in) + (1.0 / te_safe)
-    d_a_term_d_e1 = d_f_e1_d_e1 / tau_in
-    d_a_term_d_te = (-1.0 / (te_safe**2)) * d_te_safe_d_te
-    d_b_term_d_e1 = (te_safe / c_sum_safe) * d_f_e1_d_e1
-    d_b_term_d_te = (f_e1 / c_sum_safe) * d_te_safe_d_te
-
-    d_d_e2_d_e1 = -(d_a_term_d_e1 * e2) + d_b_term_d_e1
-    d_d_e2_d_te = -(d_a_term_d_te * e2) + d_b_term_d_te
-    d_d_e2_d_e2 = -a_term
-
-    # Match Rashid term clipping so Jacobian follows the projected residual model.
-    e2_pos = max(0.0, e2)
-    x1_pos = max(0.0, x1)
-    x2_pos = max(0.0, x2)
-    q1_pos = max(0.0, q1)
-    q2_pos = max(0.0, q2)
-
-    d_qe1_d_e1 = beta / hr0 if e1 > 0.0 else 0.0
-
-    d_qe21_d_q1 = alpha_ex * (e2_pos**2) * x1_pos if q1 > 0.0 else 0.0
-    d_qe21_d_x1 = alpha_ex * (e2_pos**2) * q1_pos if x1 > 0.0 else 0.0
-    d_qe21_d_e2 = 2.0 * alpha_ex * e2_pos * x1_pos * q1_pos if e2 > 0.0 else 0.0
-
-    d_qe22_d_q2 = alpha_ex * (e2_pos**2) * x2_pos if q2 > 0.0 else 0.0
-    d_qe22_d_x2 = alpha_ex * (e2_pos**2) * q2_pos if x2 > 0.0 else 0.0
-    d_qe22_d_e2 = 2.0 * alpha_ex * e2_pos * x2_pos * q2_pos if e2 > 0.0 else 0.0
-
-    jacobian = np.zeros((14, 14), dtype=np.float64)
-
-    idx_q1, idx_q2 = 0, 1
-    idx_s1, idx_s2 = 2, 3
-    idx_i = 4
-    idx_x1, idx_x2, idx_x3 = 5, 6, 7
-    idx_d1, idx_d2 = 8, 9
-    idx_e1, idx_e2, idx_te = 10, 11, 12
-    idx_u = 13
-
-    # dQ1 row
-    jacobian[0, idx_q1] = -x1 - d_f01c_d_q1 - d_fr_d_q1 - d_qe21_d_q1
+    # dQ1/d* row — at fasting ETH states are 0 so no exercise terms appear
+    jacobian[0, idx_q1] = -x1 - d_f01c_d_q1 - d_fr_d_q1
     jacobian[0, idx_q2] = k12
-    jacobian[0, idx_x1] = -q1 - d_qe21_d_x1
+    jacobian[0, idx_x1] = -q1
     jacobian[0, idx_x3] = d_egpc_d_x3
     jacobian[0, idx_d2] = inv_tau_g
-    jacobian[0, idx_e2] = -d_qe21_d_e2
 
-    # dQ2 row
-    jacobian[1, idx_q1] = x1 + d_qe21_d_q1
-    jacobian[1, idx_q2] = -k12 - x2 - d_qe22_d_q2
-    jacobian[1, idx_x1] = q1 + d_qe21_d_x1
-    jacobian[1, idx_x2] = -q2 - d_qe22_d_x2
-    jacobian[1, idx_e1] = -d_qe1_d_e1
-    jacobian[1, idx_e2] = d_qe21_d_e2 - d_qe22_d_e2
+    # dQ2/d* row
+    jacobian[1, idx_q1] = x1
+    jacobian[1, idx_q2] = -k12 - x2
+    jacobian[1, idx_x1] = q1
+    jacobian[1, idx_x2] = -q2
 
     # dS1, dS2, dI rows
     jacobian[2, idx_s1] = -inv_tau_i
-    jacobian[2, idx_u] = 1.0
+    jacobian[2, idx_u]  = 1.0
     jacobian[3, idx_s1] = inv_tau_i
     jacobian[3, idx_s2] = -inv_tau_i
     jacobian[4, idx_s2] = inv_tau_i * inv_vi_bw
-    jacobian[4, idx_i] = -ke
+    jacobian[4, idx_i]  = -ke
 
     # dx1, dx2, dx3 rows
-    jacobian[5, idx_i] = si1 * ka1
+    jacobian[5, idx_i]  = si1 * ka1
     jacobian[5, idx_x1] = -ka1
-    jacobian[6, idx_i] = si2 * ka2
+    jacobian[6, idx_i]  = si2 * ka2
     jacobian[6, idx_x2] = -ka2
-    jacobian[7, idx_i] = si3 * ka3
+    jacobian[7, idx_i]  = si3 * ka3
     jacobian[7, idx_x3] = -ka3
 
     # dD1, dD2 rows
-    jacobian[8, idx_d1] = -inv_tau_g
-    jacobian[9, idx_d1] = inv_tau_g
-    jacobian[9, idx_d2] = -inv_tau_g
+    jacobian[8, idx_d1]  = -inv_tau_g
+    jacobian[9, idx_d1]  = inv_tau_g
+    jacobian[9, idx_d2]  = -inv_tau_g
 
-    # dE1, dE2, dTE rows
-    jacobian[10, idx_e1] = -1.0 / tau_hr
-    jacobian[11, idx_e1] = d_d_e2_d_e1
-    jacobian[11, idx_e2] = d_d_e2_d_e2
-    jacobian[11, idx_te] = d_d_e2_d_te
-    jacobian[12, idx_e1] = (c1 / tau_ex) * d_f_e1_d_e1
-    jacobian[12, idx_te] = -1.0 / tau_ex
+    # --- ETH exercise states block (diagonal at fasting: AC=0, all states=0) ---
+    # Each row i has d(d_state_i)/d(state_i) = -decay_rate_i.
+    # Cross-derivatives involving fY, fAC, fHI are all zero when Y=0 (fY=0) and AC=0.
 
-    # Glucose residual row: G(x,p) - target
-    jacobian[13, idx_q1] = 1.0 / vg_bw
+    jacobian[10, idx_Y]     = -1.0 / tau_AC          # dY: decay to AC (= 0 at rest)
+    jacobian[11, idx_Z]     = -1.0 / tau_Z            # dZ: decay term dominates (fY=0)
+    jacobian[12, idx_rGU]   = -q2_eth                 # drGU: decay
+    jacobian[13, idx_rGP]   = -q4l_eth                # drGP: aerobic decay (fp=0 at rest)
+    jacobian[14, idx_tPA]   = -1.0                    # dtPA: decays to fAC=0 at rest
+    jacobian[15, idx_PAint] = -1.0                    # dPAint: decays to fAC*AC=0 at rest
+    jacobian[16, idx_rdepl] = -q6_eth                 # drdepl: decay (ft=0 when tPA=0)
+    jacobian[17, idx_th]    = -q5_eth if q5_eth > 0.0 else -1e-6  # dth: decay (fHI=0 at rest)
+
+    # Glucose residual row: d(G - target)/d* = d(Q1/(VG*BW))/dQ1
+    jacobian[18, idx_q1] = 1.0 / vg_bw
     return jacobian
 
 
@@ -676,14 +657,6 @@ def get_glucose_trace_from_trajectory(
     return np.asarray(state_trajectory[0, :effective], dtype=np.float64) / vg_bw
 
 
-def estimate_iob_from_state_vector(state: StateVector | StateArray) -> float:
-    return max(0.0, float(state[2]) + float(state[3])) / 1000.0
-
-
-def estimate_iob_from_state_trajectory(state_trajectory: np.ndarray) -> np.ndarray:
-    return np.maximum(np.asarray(state_trajectory[2, :] + state_trajectory[3, :], dtype=np.float64), 0.0) / 1000.0
-
-
 def estimate_basal_input_from_state(
     state: StateVector | StateArray,
     params: ParameterSet,
@@ -693,7 +666,9 @@ def estimate_basal_input_from_state(
 
 
 def get_non_negative_state_indices() -> np.ndarray:
-    return np.array([0, 1, 2, 3, 4, 8, 9, 10, 11, 12], dtype=np.int64)
+    # Indices 0-9: standard Hovorka states (Q1,Q2,S1,S2,I,x1,x2,x3,D1,D2)
+    # Indices 10-17: ETH exercise states (Y,Z,rGU,rGP,tPA,PAint,rdepl,th) — all non-negative
+    return np.array([0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], dtype=np.int64)
 
 
 if __name__ == "__main__":

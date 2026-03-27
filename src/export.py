@@ -104,6 +104,9 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
 
             insulin_arr: np.ndarray
             cho_arr: np.ndarray
+            scenario_id: Optional[int]
+            missed_meal_id: Optional[int]
+            late_bolus_id: Optional[int]
             if isinstance(values, Mapping):
                 values_arr = np.asarray(values.get("blood_glucose", []), dtype=np.float64)
                 # Backward-compatible read: accept both legacy and explicit-unit keys.
@@ -115,10 +118,17 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     values.get("cho_mg_min", values.get("cho", [])),
                     dtype=np.float64,
                 )
+                # Ground-truth labels for ML — None for legacy data without these fields.
+                scenario_id = values.get("scenario_id", None)  # type: ignore[assignment]
+                missed_meal_id = values.get("missed_meal_id", None)  # type: ignore[assignment]
+                late_bolus_id = values.get("late_bolus_id", None)  # type: ignore[assignment]
             else:
                 values_arr = np.asarray(values, dtype=np.float64)
                 insulin_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
                 cho_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
+                scenario_id = None
+                missed_meal_id = None
+                late_bolus_id = None
 
             if values_arr.size == 0:
                 continue
@@ -153,6 +163,9 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "blood_glucose": values_arr.astype(float),
                 "cho_mg_min": cho_arr.astype(float),
                 "insulin_mU_min": insulin_arr.astype(float),
+                "scenario_id": scenario_id,
+                "missed_meal_id": missed_meal_id,
+                "late_bolus_id": late_bolus_id,
             }))
 
     if not blocks:
@@ -167,6 +180,9 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "blood_glucose",
                 "cho_mg_min",
                 "insulin_mU_min",
+                "scenario_id",
+                "missed_meal_id",
+                "late_bolus_id",
             ]
         )
 

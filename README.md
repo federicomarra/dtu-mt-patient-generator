@@ -129,10 +129,12 @@ Stages:
 1. Initial-state rejection
    - initial glucose must be in `[initial_glucose_acceptance_min_mmol, initial_glucose_acceptance_max_mmol]`
 2. Instability rejection
-   - max glucose ≤ `instability_max_glucose_mmol` (default 30.53 mmol/L / 550 mg/dL), hyper% ≤ `instability_hyper_pct_threshold` (default 60%), hypo% ≤ `instability_hypo_pct_threshold` (default 8%) — all evaluated over the full concatenated trajectory
-3. Quality rejection — evaluated **per day**, not over the full horizon
-   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 15%); +2% spillover bonus if previous day was also exercise
+   - `max glucose > instability_max_glucose_mmol` (default 30.53 mmol/L / 550 mg/dL) — **fail-fast**: checked per day, aborts the loop immediately if any day exceeds the hard cap
+   - `hyper% > instability_hyper_pct_threshold` (default 60%) — evaluated over the **full concatenated trajectory** after all days complete (cumulative average; cannot be checked per-day)
+3. Quality rejection — evaluated **per day** with **fail-fast**: the loop aborts on the first failing day
+   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 15%)
    - all other days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 10%)
+   - +`quality_max_hypo_pct_spillover_bonus` (2%) per exercise day in the **2-day lookback** window [d-2, d-1] — accounts for Z-state (τ_Z ≈ 600 min) compounding across consecutive exercise days
    - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 75%)
    - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 1.78 mmol/L / 32 mg/dL) rejects the patient
 
@@ -153,7 +155,7 @@ Key groups:
 - Initialization and filtering:
   - `initial_target_glucose_mgdl`
   - `initial_glucose_acceptance_min_mmol`, `initial_glucose_acceptance_max_mmol`
-  - `instability_max_glucose_mmol`, `instability_hyper_pct_threshold`, `instability_hypo_pct_threshold`
+  - `instability_max_glucose_mmol`, `instability_hyper_pct_threshold`
   - `quality_max_hypo_pct_threshold`, `quality_max_hypo_pct_exercise_threshold`, `quality_max_hypo_pct_spillover_bonus`
   - `quality_max_hyper_pct_threshold`, `quality_min_glucose_mmol`
   - `n_warmup_days` (burn-in days before recording; lets ETH Z-state reach cyclic steady state)

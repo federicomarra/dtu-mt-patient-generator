@@ -195,8 +195,12 @@ $$
 $$
 
 $$
-\dot Z = b\,f_Y Y - \frac{1-f_Y}{\tau_Z}Z
+\dot Z = b\,f_Y Y \cdot \sigma_Z - \frac{1-f_Y}{\tau_Z}Z, \qquad \sigma_Z = \max\!\left(0,\,1 - \frac{Z}{Z_{\max}}\right)
 $$
+
+> **EXPERIMENTAL — multi-day saturation cap.** The original Deichmann et al. (2023) model was validated on single exercise sessions only. In multi-day Monte Carlo simulations with $\tau_Z = 600\,\mathrm{min}$, repeated exercise days cause $Z$ to accumulate across nights (only ~56% decays in 8 h), leading to unbounded growth and pathological post-exercise insulin sensitivity. The saturation factor $\sigma_Z$ caps the drive term so $Z \to Z_{\max}$ as a soft ceiling: for a single session ($Z \ll Z_{\max}$) the dynamics are identical to the original; for repeated exercise days $Z$ is bounded.
+>
+> **Calibration of $Z_{\max} = 0.2$:** For scenario 2 (aerobic, ~45 min, $AC=1500$), a single session accumulates $\Delta Z \approx 0.12$ — naturally below the cap, so scenario 2 dynamics are uncapped and physiologically faithful. For scenarios 7/8 (prolonged/anaerobic, 80–90 min, $AC \geq 1500$), the uncapped $\Delta Z$ reaches 0.65+, which would be capped at 0.2. This limits the post-exercise $Z$-driven insulin sensitisation to 20% (vs 40% at the previous $Z_{\max}=0.4$), halving the `exercise_si = Z \cdot x_1 \cdot Q_1` overnight drain while preserving a clear glucose-dip anomaly signature for ML labelling. Empirically, $Z_{\max}=0.2$ reduces the 14-day random-scenario rejection rate from ~48% to ~21%.
 
 $$
 \dot{rGU} = q_1 f_Y Y - q_2\,rGU
@@ -668,14 +672,14 @@ $$
 **Stage 2 — Instability (evaluated over the full concatenated trajectory):**
 
 $$
-\max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}, \quad \%Hypo \le \theta_{hypo,instability}
+\max(G) \le G_{max,instability}, \quad \%Hyper \le \theta_{hyper,instability}
 $$
 
-Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated sequence** (all days merged). Its purpose is to quickly discard numerically diverging or physiologically runaway simulations before the more expensive per-day quality checks. For example, a single day with 100% hyper-time in a 7-day run contributes only $\sim 14\%$ to the global hyper%, so it passes Stage 2 ($\theta_{hyper,instability}=60\%$) — this is intentional: Stage 2 catches explosive instability (e.g. glucose rocketing to 30+ mmol/L for hours), not moderate per-day excursions. The hypo instability check ($\theta_{hypo,instability}=8\%$) analogously catches sustained global hypoglycaemia across the full horizon.
+Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated sequence** (all days merged). Its purpose is to quickly discard numerically diverging or physiologically runaway simulations before the more expensive per-day quality checks. For example, a single day with 100% hyper-time in a 7-day run contributes only $\sim 14\%$ to the global hyper%, so it passes Stage 2 ($\theta_{hyper,instability}=60\%$) — this is intentional: Stage 2 catches explosive instability (e.g. glucose rocketing to 30+ mmol/L for hours), not moderate per-day excursions. Hypo is not checked at this stage: per-day quality checks (Stage 3) already enforce hypo limits with scenario-aware thresholds, making a global hypo instability check redundant and overly strict for long multi-exercise runs.
 
 **Stage 3 — Quality (evaluated per recorded day independently):**
 
-Each day $d$ with scenario $s_d$ gets a base hypo threshold, then a spillover bonus is added if the **previous recorded day** was an exercise scenario:
+Each day $d$ with scenario $s_d$ gets a base hypo threshold, then a spillover bonus $\delta_{spillover}$ is added once per exercise day found in the **2-day lookback window** $\{d-2,\, d-1\}$:
 
 $$
 \theta_{hypo,base}(d) =
@@ -686,17 +690,22 @@ $$
 $$
 
 $$
-\theta_{hypo}(d) = \theta_{hypo,base}(d) + \delta_{spillover} \cdot \mathbf{1}[s_{d-1} \in \{2,7,8,9\}]
+\theta_{hypo}(d) = \theta_{hypo,base}(d)
+  + \delta_{spillover} \cdot \mathbf{1}[s_{d-1} \in \{2,7,8,9\}]
+  + \delta_{spillover} \cdot \mathbf{1}[s_{d-2} \in \{2,7,8,9\}]
 $$
 
-The spillover bonus $\delta_{spillover}$ accounts for the $Z$-state (post-exercise insulin sensitivity, $\tau_Z \approx 600$ min) remaining partially active the next morning, increasing hypo risk even on days with a non-exercise scenario label. The bonus stacks correctly for back-to-back exercise days:
+The $Z$-state (post-exercise insulin sensitivity, $\tau_Z \approx 600$ min) retains $\approx 40\%$ of its peak after one overnight interval and $\approx 9\%$ after two days. Consecutive exercise days compound this: each exercise day pre-loads $Z$ to a higher baseline for the next, so each prior exercise day in the 2-day window contributes an independent elevation of hypo risk. Scenarios 8 (anaerobic/HIIT, $AC \approx 6000$–$9000$) drive $Z$ to an even higher peak than aerobic scenarios (higher $Y$ due to higher $AC$) and therefore benefit most from the 2-day lookback.
 
-| Day $d-1$ | Day $d$ | Effective $\theta_{hypo}(d)$ |
-| --- | --- | --- |
-| non-exercise | non-exercise | $10\%$ |
-| exercise | non-exercise | $10\% + 2\% = 12\%$ |
-| non-exercise | exercise | $15\%$ |
-| exercise | exercise | $15\% + 2\% = 17\%$ |
+| Day $d-2$ | Day $d-1$ | Day $d$ | Effective $\theta_{hypo}(d)$ |
+| --- | --- | --- | --- |
+| non-exercise | non-exercise | non-exercise | $10\%$ |
+| non-exercise | exercise | non-exercise | $10\% + 2\% = 12\%$ |
+| exercise | non-exercise | non-exercise | $10\% + 2\% = 12\%$ |
+| exercise | exercise | non-exercise | $10\% + 2\% + 2\% = 14\%$ |
+| non-exercise | non-exercise | exercise | $15\%$ |
+| non-exercise | exercise | exercise | $15\% + 2\% = 17\%$ |
+| exercise | exercise | exercise | $15\% + 2\% + 2\% = 19\%$ |
 
 $$
 \%Hyper_d \le \theta_{hyper,quality} \quad \forall\, d
@@ -714,7 +723,13 @@ $$
 
 A patient is rejected if any single day violates its threshold, or if the **physiological** (noiseless) glucose drops below $G_{floor}$ at any minute. This prevents deeply hypoglycaemic states from entering the accepted cohort even when the day-average hypo% would pass.
 
-Default values: $\theta_{hypo,quality}=10\%$, $\theta_{hypo,exercise}=15\%$, $\delta_{spillover}=2\%$, $\theta_{hyper,quality}=75\%$, $\theta_{hyper,instability}=60\%$, $\theta_{hypo,instability}=8\%$, $G_{max,instability}=30.53$ mmol/L (550 mg/dL), $G_{floor}=1.78$ mmol/L (32 mg/dL). All thresholds are config-driven from `SimulationConfig`.
+**Implementation — fail-fast rejection:**
+
+Stage 3 checks (hypo%, hyper%, $G_{floor}$) and the $G_{max,instability}$ hard cap from Stage 2 are evaluated **inside the day loop** immediately after each day completes. If any day fails, the loop breaks and the patient is rejected without simulating the remaining days. This is safe because per-day thresholds are independent of future days, and if any single day's max glucose exceeds $G_{max,instability}$ the global maximum will also exceed it.
+
+The $\%Hyper_{instability}$ check from Stage 2 is **not** fail-fast — it is a trajectory-wide average evaluated after all days complete. A single hyperglycaemic day can average out over N days and would be wrongly rejected early if checked incrementally.
+
+Default values: $\theta_{hypo,quality}=10\%$, $\theta_{hypo,exercise}=15\%$, $\delta_{spillover}=2\%$ (applied per exercise day in the 2-day lookback), $\theta_{hyper,quality}=75\%$, $\theta_{hyper,instability}=60\%$, $G_{max,instability}=30.53$ mmol/L (550 mg/dL), $G_{floor}=1.78$ mmol/L (32 mg/dL). All thresholds are config-driven from `SimulationConfig`.
 
 **Design note — floor applied to physiological glucose only, not to the CGM signal:**
 
@@ -784,6 +799,7 @@ Aerobic parameters are validated on 5 T1D children from the Basel University Chi
 | `eth_q4h` | 0.0705 | 1/min | Fixed (EXPERIMENTAL) | rGP anaerobic decay; params_standard.csv |
 | `eth_q5` | 0.03 | 1/min | Fixed (EXPERIMENTAL) | th decay rate; params_standard.csv |
 | `eth_q6` | 0.0 | 1/min | Fixed | Glycogen depletion rate; 0 for aerobic-only validated path |
+| `eth_Z_max` | 0.2 | count·min | Fixed (EXPERIMENTAL) | Soft ceiling on Z accumulation; prevents multi-day buildup (see §4.3) |
 
 **Note on eth_n1/n2:** The very large Hill coefficients (20, 100) make the sigmoidal transfer functions behave as near-binary switches. This is intentional in the ETH formulation: $f_{AC}$ switches sharply at $a_{AC}=1000$ counts to mark the onset of activity, and $f_{HI}$ switches sharply at $a_h=5600$ counts to mark the anaerobic transition.
 

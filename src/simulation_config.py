@@ -26,7 +26,6 @@ class SimulationConfig:
     initial_glucose_acceptance_max_mmol: float = 7.2
     instability_max_glucose_mmol: float = 30.53  # 550 mg/dL / 18.016
     instability_hyper_pct_threshold: float = 60.0
-    instability_hypo_pct_threshold: float = 8.0
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
     # Exercise days (scenarios 2, 7, 8, 9) use the _exercise variants because physiological
     # hypo during/after vigorous exercise is expected and the rescue system handles it.
@@ -41,11 +40,14 @@ class SimulationConfig:
     # cohort generation and should be reported as such in validation experiments.
     quality_max_hypo_pct_threshold: float = 10.0
     quality_max_hypo_pct_exercise_threshold: float = 15.0
-    # Bonus added to the hypo threshold of a day that immediately follows an exercise day
+    # Bonus added to the hypo threshold per exercise day found in the 2-day lookback window
     # (scenarios 2,7,8,9). The Z state (post-exercise insulin sensitivity, tau_Z≈600 min)
-    # remains partially active the next morning, so the threshold is relaxed by this delta
-    # on top of the day's own base threshold. Back-to-back exercise days stack correctly:
-    # exercise→exercise gives 8%+2%=10%; exercise→normal gives 4%+2%=6%.
+    # pre-loads at ~40% for 1 day prior and compounds further for 2 consecutive exercise days.
+    # Each exercise day in the [d-2, d-1] window contributes this bonus independently:
+    #   non-ex→exercise→any:      base + 2%  (d-1 spillover)
+    #   exercise→non-ex→any:      base + 2%  (d-2 spillover; Z still ~9% after 2 days)
+    #   exercise→exercise→non-ex: 10% + 2% + 2% = 14%
+    #   exercise→exercise→exercise: 15% + 2% + 2% = 19%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
     quality_max_hyper_pct_threshold: float = 75.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.

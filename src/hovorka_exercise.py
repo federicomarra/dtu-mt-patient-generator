@@ -71,6 +71,9 @@ def compute_eth_exercise_terms(
     tau_AC = max(1.0, float(params["eth_tau_AC"]))   # [min] AC → Y time constant (≈5 min)
     b      = max(0.0, float(params["eth_b"]))         # [1/(count·min)] Z drive coefficient
     tau_Z  = max(1.0, float(params["eth_tau_Z"]))     # [min] long-term SI decay (~600 min)
+    # EXPERIMENTAL: multi-day Z cap (not in original Deichmann et al. 2023 paper).
+    # Prevents unbounded cross-day accumulation by saturating the Z drive as Z → Z_max.
+    Z_max  = max(1e-3, float(params.get("eth_Z_max", float("inf"))))
     q1     = max(0.0, float(params["eth_q1"]))        # [1/(count·min²)] rGU drive
     q2     = max(0.0, float(params["eth_q2"]))        # [1/min] rGU decay
     q3l    = max(0.0, float(params["eth_q3l"]))       # rGP drive — aerobic (T1D-validated)
@@ -146,8 +149,11 @@ def compute_eth_exercise_terms(
     dY = (-1.0 / tau_AC) * Y_s + (1.0 / tau_AC) * AC
 
     # Z: long-term post-exercise SI elevation — driven by fY*Y during exercise,
-    #    decays with τ = tau_Z ≈ 600 min (~10h) after exercise stops (fY → 0)
-    dZ = b * fY * Y_s - (1.0 - fY) / tau_Z * Z_s
+    #    decays with τ = tau_Z ≈ 600 min (~10h) after exercise stops (fY → 0).
+    # EXPERIMENTAL: saturation factor (1 - Z/Z_max) caps multi-day accumulation.
+    # When Z << Z_max (single session) the drive is unchanged; as Z → Z_max it shuts off.
+    Z_sat_factor = max(0.0, 1.0 - Z_s / Z_max)
+    dZ = b * fY * Y_s * Z_sat_factor - (1.0 - fY) / tau_Z * Z_s
 
     # rGU: exercise glucose utilization rate (rises with activity, decays after)
     drGU = q1 * fY * Y_s - q2 * rGU_s

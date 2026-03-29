@@ -147,7 +147,6 @@ def run_simulation(
     )
     instability_max_glucose_mmol = config.instability_max_glucose_mmol
     instability_hyper_pct = config.instability_hyper_pct_threshold
-    instability_hypo_pct = config.instability_hypo_pct_threshold
     quality_max_hypo_pct = config.quality_max_hypo_pct_threshold
     quality_max_hyper_pct = config.quality_max_hyper_pct_threshold
 
@@ -299,6 +298,11 @@ def run_simulation(
             # exercise days (2, 7, 8, 9) use the looser exercise threshold even in random-scenario runs.
             per_day_quality: list[tuple[int, float, float, float]] = []
             _EXERCISE_SCENARIO_IDS: frozenset[int] = frozenset({2, 7, 8, 9})
+            # Fail-fast rejection: track running instability stats so we can abort
+            # the day loop as soon as any day exceeds a threshold, rather than
+            # simulating all N days before checking.
+            _early_reject_reason: str | None = None
+            _running_max_glucose: float = 0.0
 
             # Simulate each day
             for day_idx in range(config.n_days):
@@ -508,6 +512,61 @@ def run_simulation(
                     day_min_glucose = float(np.min(physio_segment_mmol))
                     per_day_quality.append((scenario, day_hypo_pct, day_hyper_pct, day_min_glucose))
 
+                    # --- Fail-fast checks for this day ---
+                    # Hard absolute cap: max glucose > 30.53 mmol/L on any single day guarantees
+                    # the global max will also exceed the threshold, so we can abort immediately.
+                    # The cumulative total_hyper_pct instability check is NOT done here because
+                    # it is a trajectory-wide average (60% threshold); a single bad day can average
+                    # out over N days and would be wrongly rejected early.
+                    _day_max_glucose = float(np.max(physio_segment_mmol))
+                    _running_max_glucose = max(_running_max_glucose, _day_max_glucose)
+                    if _running_max_glucose > instability_max_glucose_mmol:
+                        _early_reject_reason = "instability"
+                        break
+
+                    # Quality: check this day immediately using the same spillover logic as the
+                    # post-loop block.  per_day_quality[-1] is the entry just appended above.
+                    _day_i = len(per_day_quality) - 1
+                    _prev_was_exercise = (
+                        _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
+                    )
+                    _two_days_ago_was_exercise = (
+                        _day_i > 1 and per_day_quality[_day_i - 2][0] in _EXERCISE_SCENARIO_IDS
+                    )
+                    _base_hypo_thresh = (
+                        config.quality_max_hypo_pct_exercise_threshold
+                        if scenario in _EXERCISE_SCENARIO_IDS
+                        else quality_max_hypo_pct
+                    )
+                    _day_hypo_thresh = (
+                        _base_hypo_thresh
+                        + (config.quality_max_hypo_pct_spillover_bonus if _prev_was_exercise else 0.0)
+                        + (config.quality_max_hypo_pct_spillover_bonus if _two_days_ago_was_exercise else 0.0)
+                    )
+                    if day_hypo_pct > _day_hypo_thresh:
+                        print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                        _early_reject_reason = "quality_hypo"
+                        break
+                    if day_min_glucose < config.quality_min_glucose_mmol:
+                        print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                        _early_reject_reason = "quality_hypo"
+                        break
+                    if day_hyper_pct > quality_max_hyper_pct:
+                        _early_reject_reason = "quality_hyper"
+                        break
+
+            # Handle early rejection from the day loop.
+            if _early_reject_reason is not None:
+                rejected_patients += 1
+                if _early_reject_reason == "instability":
+                    rejected_instability += 1
+                elif _early_reject_reason == "quality_hypo":
+                    rejected_quality_hypo += 1
+                else:
+                    rejected_quality_hyper += 1
+                del results_tot[sim_patient_id]
+                continue
+
             # Absolute-minute end of this simulated horizon, used to clip correction windows.
             horizon_end_abs_min = config.n_days * minutes_per_day
             patient_correction_isf_active_points += count_correction_active_points(
@@ -528,23 +587,17 @@ def run_simulation(
                 100.0 * int(np.sum(patient_full_trajectory_physio_concat > 10.0)) / total_count
                 if total_count > 0 else 0.0
             )
-            total_hypo_pct = (
-                100.0 * int(np.sum(patient_full_trajectory_physio_concat < 3.9)) / total_count
-                if total_count > 0 else 0.0
-            )
-            if (total_hyper_pct > instability_hyper_pct
-                    or total_hypo_pct > instability_hypo_pct
-                    or max_glucose > instability_max_glucose_mmol):
+            if total_hyper_pct > instability_hyper_pct or max_glucose > instability_max_glucose_mmol:
                 rejected_patients += 1
                 rejected_instability += 1
                 del results_tot[sim_patient_id]
                 continue
             # Quality: per-day scenario-aware rejection.
             # Base threshold depends on the day's own scenario (exercise days use the looser
-            # exercise threshold). A +spillover_bonus is added when the *previous* recorded day
-            # was an exercise scenario, because the Z state (tau_Z≈600 min) remains partially
-            # active the next morning and increases hypo risk even on non-exercise days.
-            # Back-to-back exercise days stack: exercise→exercise = 8%+2% = 10%.
+            # exercise threshold). The spillover bonus is applied once per exercise day found
+            # in the 2-day lookback window [d-2, d-1]: the Z state (tau_Z≈600 min) retains
+            # ~40% after 1 day and ~9% after 2 days, and consecutive exercise days pre-load Z
+            # to a higher baseline so each prior exercise day contributes independently.
             # Also enforce a hard minimum glucose floor across all days.
             _quality_hypo_fail  = False
             _quality_hyper_fail = False
@@ -553,20 +606,27 @@ def run_simulation(
                 _prev_was_exercise = (
                     _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
                 )
+                _two_days_ago_was_exercise = (
+                    _day_i > 1 and per_day_quality[_day_i - 2][0] in _EXERCISE_SCENARIO_IDS
+                )
                 _base_hypo_thresh = (
                     config.quality_max_hypo_pct_exercise_threshold
                     if _scen_id in _EXERCISE_SCENARIO_IDS
                     else quality_max_hypo_pct
                 )
-                _day_hypo_thresh = _base_hypo_thresh + (
-                    config.quality_max_hypo_pct_spillover_bonus if _prev_was_exercise else 0.0
+                _day_hypo_thresh = (
+                    _base_hypo_thresh
+                    + (config.quality_max_hypo_pct_spillover_bonus if _prev_was_exercise else 0.0)
+                    + (config.quality_max_hypo_pct_spillover_bonus if _two_days_ago_was_exercise else 0.0)
                 )
                 if _day_hypo > _day_hypo_thresh:
                     _quality_hypo_fail = True
+                    print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
                 if _day_hyper > quality_max_hyper_pct:
                     _quality_hyper_fail = True
                 if _day_min < config.quality_min_glucose_mmol:
                     _quality_floor_fail = True
+                    print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
             if _quality_floor_fail or _quality_hypo_fail:
                 rejected_patients += 1
                 rejected_quality_hypo += 1

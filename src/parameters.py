@@ -47,14 +47,17 @@ def _get_hovorka_base_params() -> ParameterSet:
         # AC-driven states: Y, Z, rGU, rGP, tPA, PAint, rdepl, th.
         # Source: gitlab.com/csb.ethz/t1d-exercise-model
         #
-        # Aerobic parameters (T1D-validated, from 5 Basel children + T1D variants):
+        # Aerobic parameters — nominal values from params_T1D-V1 / params_standard
+        # (Deichmann et al. 2023, gitlab.com/csb.ethz/t1d-exercise-model).
+        # NOTE: all 5 individual patient files share identical exercise parameters;
+        # inter-patient variability is captured by the V1 posterior (261 samples).
         "eth_tau_AC":  5.0,       # [min] AC → Y time constant (fixed across all patients)
         "eth_tau_Z":   600.0,     # [min] post-exercise SI decay (~10h, fixed)
-        "eth_b":       3.0e-6,    # [1/(count·min)] Z drive; mean of patient1-5 + V1 values
-        "eth_q1":      1.0e-6,    # [1/(count·min²)] rGU drive; mean of T1D patients
-        "eth_q2":      0.10,      # [1/min] rGU decay; mean of T1D patients
-        "eth_q3l":     3.0e-7,    # rGP aerobic drive; mean of T1D patients
-        "eth_q4l":     0.060,     # [1/min] rGP aerobic decay; mean of T1D patients
+        "eth_b":       3.64e-6,   # [1/(count·min)] Z drive; V1/standard nominal
+        "eth_q1":      6.46e-7,   # [1/(count·min²)] rGU drive; V1/standard nominal
+        "eth_q2":      0.0617,    # [1/min] rGU decay; V1/standard nominal
+        "eth_q3l":     4.46e-7,   # rGP aerobic drive; V1/standard nominal
+        "eth_q4l":     0.0705,    # [1/min] rGP aerobic decay; V1/standard nominal
         "eth_adepl":   0.0108,    # [min/count] glycogen depletion slope (fixed)
         "eth_bdepl":   180.6,     # [count·min] glycogen depletion intercept (fixed)
         "eth_aY":      1500.0,    # [count·min] fY half-saturation (fixed)
@@ -70,6 +73,19 @@ def _get_hovorka_base_params() -> ParameterSet:
         "eth_q4h":     0.0705,    # [1/min] rGP anaerobic decay (EXPERIMENTAL)
         "eth_q5":      0.03,      # [1/min] th decay rate (EXPERIMENTAL)
         "eth_q6":      0.0,       # [1/min] glycogen depletion rate (0 = aerobic-only)
+        # Multi-day accumulation cap — EXPERIMENTAL (original paper validated on single sessions only).
+        # Z naturally accumulates when exercise days repeat: each session raises Z and tau_Z=600 min
+        # means only ~56% decays overnight, leading to unbounded multi-day buildup.
+        # eth_Z_max caps the drive term via (1 - Z/Z_max), bounding Z to a single-session ceiling.
+        #
+        # Calibration rationale (Z_max=0.2):
+        #   Scenario 2 (aerobic, 45 min, AC=1500): ΔZ ≈ 0.12 per session → naturally below cap,
+        #   grows freely and realistically. Multi-day spillover compounds to ≤0.15 at most.
+        #   Scenarios 7/8 (prolonged/anaerobic, 80-90 min, AC≥1500): ΔZ ≈ 0.65 uncapped → capped
+        #   at 0.2. Post-exercise effective insulin sensitization 20% (was 40% at Z_max=0.4).
+        #   This halves the exercise_si=Z*x1*Q1 overnight drain for intense exercise days while
+        #   preserving the anomaly glucose signature needed for ML labeling.
+        "eth_Z_max":   0.2,       # [count·min] soft ceiling on Z accumulation (EXPERIMENTAL)
     }
 
 
@@ -83,14 +99,15 @@ def _sample_truncated_normal(
     mean: float,
     std: float,
     lower: float = _MIN_POSITIVE,
+    upper: float = float("inf"),
     max_attempts: int = _MAX_RESAMPLE_ATTEMPTS,
 ) -> float:
-    """Sample from Normal(mean, std) truncated at lower bound (no folding by abs)."""
+    """Sample from Normal(mean, std) truncated to (lower, upper) by rejection."""
     for _ in range(max_attempts):
         sample = float(rng.normal(mean, std))
-        if np.isfinite(sample) and sample > lower:
+        if np.isfinite(sample) and sample > lower and sample < upper:
             return sample
-    return max(lower, float(mean))
+    return float(np.clip(mean, lower, upper))
 
 
 def _is_plausible_patient(p: ParameterSet) -> bool:
@@ -223,15 +240,19 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     # Body weight: constrained male cohort range for this simulation setup.
     p["BW"] = float(rng.uniform(65.0, 95.0))
 
-    # ETH exercise parameter sampling — aerobic only (T1D-validated variability).
-    # Distributions derived from params_T1D-V1/V2/V3 and params_patient1-5.
+    # ETH exercise parameter sampling — distributions from params_T1D-V1_pred.csv
+    # (261-sample V1 posterior, Deichmann et al. 2023). The 5 individual patient
+    # files share identical exercise parameters and do not represent inter-patient
+    # variability — the posterior is the correct source for Monte Carlo sampling.
     # Fixed structural parameters (tau_AC, tau_Z, adepl, bdepl, aY, aAC, ah, n1, n2, tp, alpha)
     # are not sampled — they are consistent across all T1D patient files.
-    p["eth_b"]   = _sample_truncated_normal(rng, 3.0e-6, 1.0e-6, lower=1e-9)   # Z drive coefficient
-    p["eth_q1"]  = _sample_truncated_normal(rng, 1.0e-6, 8.0e-7, lower=1e-9)   # rGU drive
-    p["eth_q2"]  = _sample_truncated_normal(rng, 0.10,   0.08,   lower=1e-4)    # rGU decay
-    p["eth_q3l"] = _sample_truncated_normal(rng, 3.0e-7, 1.5e-7, lower=1e-10)  # rGP aerobic drive
-    p["eth_q4l"] = _sample_truncated_normal(rng, 0.060,  0.018,  lower=1e-4)    # rGP aerobic decay
+    # eth_b: V1 nominal 3.64e-6; std reflects V1/V2/V3 spread (1.55–3.64e-6).
+    p["eth_b"]   = _sample_truncated_normal(rng, 3.64e-6, 1.05e-6, lower=1e-9)  # Z drive
+    # eth_q1/q2: posterior mean/std; observed range [4.4e-7, 1.2e-6] / [0.032, 0.134].
+    p["eth_q1"]  = _sample_truncated_normal(rng, 7.33e-7, 1.60e-7, lower=1e-9, upper=1.3e-6)  # rGU drive
+    p["eth_q2"]  = _sample_truncated_normal(rng, 0.0707,  0.0219,  lower=0.032)               # rGU decay
+    p["eth_q3l"] = _sample_truncated_normal(rng, 5.79e-7, 1.83e-7, lower=1e-10)  # rGP aerobic drive
+    p["eth_q4l"] = _sample_truncated_normal(rng, 0.0993,  0.0378,  lower=1e-4)   # rGP aerobic decay
     # Anaerobic params are fixed (EXPERIMENTAL) — not sampled per patient.
 
     return p

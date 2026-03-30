@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 ### General options 
 ### -- specify queue -- 
 #BSUB -q hpc
@@ -17,15 +17,15 @@
 ### -- set the email address -- 
 # please uncomment the following line and put in your e-mail address,
 # if you want to receive e-mail notifications on a non-default address
-##BSUB -u furlanettoguido@gmail.com
+#BSUB -u furlanettoguido@gmail.com
 ### -- send notification at start -- 
 #BSUB -B 
 ### -- send notification at completion -- 
 #BSUB -N 
 ### -- Specify the output and error file. %J is the job-id -- 
 ### -- -o and -e mean append, -oo and -eo mean overwrite -- 
-#BSUB -o logs/output_%J.out 
-#BSUB -e logs/output_%J.err 
+#BSUB -o /zhome/15/9/213553/dtu-mt-patient-generator/logs/output_%J.out
+#BSUB -e /zhome/15/9/213553/dtu-mt-patient-generator/logs/output_%J.err
 
 # here follow the commands you want to execute with input.in as the input file
 source /zhome/15/9/213553/dtu-mt-patient-generator/.venv/bin/activate
@@ -35,7 +35,7 @@ cd /zhome/15/9/213553/dtu-mt-patient-generator
 # use this for unbuffered output, so that you can check in real-time
 # (with tail -f logs/output_.out logs/output_.err)
 # what your program was printing "on the screen"
-python3 library_generator.py
+python3 -u library_generator.py
 
 # use this for just piping everything into a file, 
 # the program knows then, that it's outputting to a file

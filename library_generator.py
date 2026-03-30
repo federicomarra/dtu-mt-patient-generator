@@ -14,13 +14,13 @@ from src.simulation_config import SimulationConfig
 
 
 if __name__ == "__main__":
-    # On DTU HPC (SLURM), use the allocated CPU count instead of the node's total.
+    # On DTU HPC (LSF), use the allocated CPU count instead of the node's total.
     # os.cpu_count() returns all CPUs on the physical node (e.g. 64), not your
-    # SLURM allocation, which would over-subscribe your job and risk getting killed.
-    # SLURM_CPUS_PER_TASK is set automatically by SLURM to exactly your --cpus-per-task.
-    # Locally (no SLURM), fall back to half the available cores as before.
-    _slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0))
-    workers = _slurm_cpus if _slurm_cpus > 0 else max(1, (os.cpu_count() or 2) // 2)
+    # LSF allocation, which would over-subscribe your job and risk getting killed.
+    # LSB_MAX_NUM_PROCESSORS is set automatically by LSF to exactly your --ncpus.
+    # Locally (no LSF), fall back to half the available cores as before.
+    _lsf_cpus = int(os.environ.get("LSB_MAX_NUM_PROCESSORS", 0))
+    workers = _lsf_cpus if _lsf_cpus > 0 else max(1, (os.cpu_count() or 2) // 2)
 
     config = SimulationConfig(
         n_patients=20000,

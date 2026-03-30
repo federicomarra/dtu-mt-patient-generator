@@ -38,7 +38,7 @@ def measure_glycemia(
     params: Mapping[str, SupportsFloat],
     noise_std: float = 0.0,
     *,
-    mode: SensorMode = "gaussian",
+    mode: SensorMode = "lagged",      #type SensorMode = Literal["none", "gaussian", "bias_gaussian", "lagged"]
     bias: float = 0.0,
     phi: float = 0.85,
     lag_alpha: float = 0.25,

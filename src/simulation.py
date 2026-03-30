@@ -544,11 +544,11 @@ def run_simulation(
                         + (config.quality_max_hypo_pct_spillover_bonus if _two_days_ago_was_exercise else 0.0)
                     )
                     if day_hypo_pct > _day_hypo_thresh:
-                        print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                        # print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
                         _early_reject_reason = "quality_hypo"
                         break
                     if day_min_glucose < config.quality_min_glucose_mmol:
-                        print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                        # print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
                         _early_reject_reason = "quality_hypo"
                         break
                     if day_hyper_pct > quality_max_hyper_pct:
@@ -621,12 +621,12 @@ def run_simulation(
                 )
                 if _day_hypo > _day_hypo_thresh:
                     _quality_hypo_fail = True
-                    print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                    # print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
                 if _day_hyper > quality_max_hyper_pct:
                     _quality_hyper_fail = True
                 if _day_min < config.quality_min_glucose_mmol:
                     _quality_floor_fail = True
-                    print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                    # print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
             if _quality_floor_fail or _quality_hypo_fail:
                 rejected_patients += 1
                 rejected_quality_hypo += 1

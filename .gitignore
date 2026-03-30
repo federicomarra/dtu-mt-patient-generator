@@ -199,3 +199,6 @@ cython_debug/
 # Agents markdown files
 CLAUDE.md
 .claude
+
+# Jobs logs and errors
+/logs

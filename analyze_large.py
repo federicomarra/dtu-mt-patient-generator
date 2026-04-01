@@ -39,6 +39,20 @@ def find_latest() -> Path:
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
+def _read_seed_from_sidecar(file_path: Path) -> str | None:
+    """Read random seed from nearby config_*.txt sidecar if present."""
+    sidecars = sorted(file_path.parent.glob("config_*p_*d.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for cfg in sidecars:
+        try:
+            with cfg.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("random_seed:"):
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            continue
+    return None
+
+
 class OnlineStats:
     """Welford online mean/variance + running min/max."""
     __slots__ = ("n", "mean", "_m2", "mn", "mx")
@@ -89,6 +103,11 @@ def analyze(file_path: Path) -> None:
     print(f"\n{'='*70}")
     print(f"File:       {file_path}")
     print(f"Total rows: {total_rows:,}   Row groups: {n_groups}")
+    seed_value = _read_seed_from_sidecar(file_path)
+    if seed_value is not None:
+        print(f"Seed:       {seed_value} (from config sidecar)")
+    else:
+        print("Seed:       n/a (not found in nearby config sidecar)")
     print(f"{'='*70}\n")
 
     # ── Detect unit from first row group ─────────────────────────────────────

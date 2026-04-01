@@ -76,6 +76,11 @@ AFTERNOON_SNACK_TIME_MAX: int = time_to_minutes(16, 30)
 AFTERNOON_SNACK_DURATION_MIN: int = 5
 AFTERNOON_SNACK_DURATION_MAX: int = 10
 
+# Realistic snack adherence variability: some days one snack is skipped,
+# and more rarely both snacks are skipped.
+SNACK_SKIP_ONE_PROB: float = 0.20
+SNACK_SKIP_BOTH_PROB: float = 0.07
+
 # Dinner: moderate with realistic 20-25 min and earlier timing for active schedule
 DINNER_CARBS_MIN: int = 50
 DINNER_CARBS_MAX: int = 75
@@ -83,6 +88,12 @@ DINNER_TIME_MIN: int = time_to_minutes(18, 30)
 DINNER_TIME_MAX: int = time_to_minutes(20, 0)
 DINNER_DURATION_MIN: int = 20
 DINNER_DURATION_MAX: int = 25
+
+# Periodic larger main meal (lunch or dinner, not both): once every 1-2 weeks.
+HIGH_MAIN_MEAL_CARBS_MIN: int = 70
+HIGH_MAIN_MEAL_CARBS_MAX: int = 120
+HIGH_MAIN_MEAL_GAP_DAYS_MIN: int = 7
+HIGH_MAIN_MEAL_GAP_DAYS_MAX: int = 14
 
 # Bolus timing: 15 min pre-meal for fast-paced active schedule
 PREANNOUNCED_BOLUS_TIME: int = 15
@@ -106,8 +117,14 @@ class MealSchedule(TypedDict):
     lunch: MealSpec
     afternoon_snack: MealSpec
     dinner: MealSpec
+    breakfast_bolus_carbs_g: float
+    morning_snack_bolus_carbs_g: float
+    lunch_bolus_carbs_g: float
+    afternoon_snack_bolus_carbs_g: float
+    dinner_bolus_carbs_g: float
     missed_meal_id: Optional[int]  # For missed bolus scenario (1-5 or None)
     late_bolus_id: Optional[int]   # For late bolus scenario (1-5 or None)
+    late_bolus_delay_min: int
 
 
 class ExerciseSpec(TypedDict):
@@ -129,12 +146,26 @@ class ExerciseSchedule(TypedDict):
 _PATIENT_SEED_FACTOR: int = 10_000
 _SCENARIO_SEED_FACTOR: int = 1_000_000
 _DAY_SEED_FACTOR: int = 97
+_HIGH_CARB_STREAM_OFFSET: int = 31
+_BOLUS_ESTIMATION_STREAM_OFFSET: int = 53
 _SMALL_TIME_JITTER_MIN: int = -5
 _SMALL_TIME_JITTER_MAX: int = 6
 _SMALL_CARB_JITTER_PCT: float = 0.06
 _IRREGULAR_DAY_PROBABILITY: float = 0.15
 _IRREGULAR_TIME_JITTER_MIN: int = -20
 _IRREGULAR_TIME_JITTER_MAX: int = 21
+
+# Bolus uses estimated carbs; gut absorption uses actual meal carbs.
+_PATIENT_BOLUS_BIAS_MIN: float = 0.90
+_PATIENT_BOLUS_BIAS_MAX: float = 1.05
+_MEAL_EST_NOISE_MIN: float = 0.90
+_MEAL_EST_NOISE_MAX: float = 1.10
+_LUNCH_DINNER_UNDEREST_MIN: float = 0.90
+_LUNCH_DINNER_UNDEREST_MAX: float = 0.98
+_SNACK_EST_MIN: float = 0.96
+_SNACK_EST_MAX: float = 1.04
+_LATE_BOLUS_DELAY_MIN: int = 5
+_LATE_BOLUS_DELAY_MAX: int = 20
 
 _EXERCISE_START_MIN: int = time_to_minutes(16, 30)
 _EXERCISE_START_MAX: int = time_to_minutes(20, 30)
@@ -262,8 +293,14 @@ def generate_meal_schedule(
         "lunch": lunch,
         "afternoon_snack": afternoon_snack,
         "dinner": dinner,
+        "breakfast_bolus_carbs_g": float(breakfast["carbs"]),
+        "morning_snack_bolus_carbs_g": float(morning_snack["carbs"]),
+        "lunch_bolus_carbs_g": float(lunch["carbs"]),
+        "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]),
+        "dinner_bolus_carbs_g": float(dinner["carbs"]),
         "missed_meal_id": missed_meal_id,
         "late_bolus_id": late_bolus_id,
+        "late_bolus_delay_min": 0,
     }
 
 
@@ -507,6 +544,8 @@ def _build_daily_schedule_from_baseline(
     baseline: MealSchedule,
     scenario: int,
     rng: np.random.Generator,
+    high_carb_main_meal: Optional[str] = None,
+    patient_bolus_bias: float = 1.0,
 ) -> MealSchedule:
     """Build patient-specific daily schedule with realistic variation from baseline."""
     breakfast = _jitter_meal(
@@ -659,14 +698,57 @@ def _build_daily_schedule_from_baseline(
         # Compound anomaly: exercise session + missed bolus for one meal.
         missed_meal_id = int(rng.integers(1, 6))
 
+    # Once every 1-2 weeks, increase either lunch or dinner carbs (not both).
+    if high_carb_main_meal == "lunch":
+        lunch["carbs"] = int(rng.integers(HIGH_MAIN_MEAL_CARBS_MIN, HIGH_MAIN_MEAL_CARBS_MAX + 1))
+    elif high_carb_main_meal == "dinner":
+        dinner["carbs"] = int(rng.integers(HIGH_MAIN_MEAL_CARBS_MIN, HIGH_MAIN_MEAL_CARBS_MAX + 1))
+
+    # Some days snacks are skipped entirely (no carbs => no snack bolus).
+    skip_roll = float(rng.random())
+    if skip_roll < SNACK_SKIP_BOTH_PROB:
+        morning_snack["carbs"] = 0
+        afternoon_snack["carbs"] = 0
+    elif skip_roll < (SNACK_SKIP_BOTH_PROB + SNACK_SKIP_ONE_PROB):
+        if bool(rng.integers(0, 2)):
+            morning_snack["carbs"] = 0
+        else:
+            afternoon_snack["carbs"] = 0
+
+    # Meal-level carb estimation for bolus: lunch/dinner are more often
+    # underestimated than snacks.
+    breakfast_est_factor = patient_bolus_bias * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+    morning_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    lunch_est_factor = (
+        patient_bolus_bias
+        * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+        * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
+    )
+    afternoon_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    dinner_est_factor = (
+        patient_bolus_bias
+        * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+        * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
+    )
+
+    late_bolus_delay_min = 0
+    if scenario == _SCENARIO_LATE_BOLUS:
+        late_bolus_delay_min = int(rng.integers(_LATE_BOLUS_DELAY_MIN, _LATE_BOLUS_DELAY_MAX + 1))
+
     return {
         "breakfast": breakfast,
         "morning_snack": morning_snack,
         "lunch": lunch,
         "afternoon_snack": afternoon_snack,
         "dinner": dinner,
+        "breakfast_bolus_carbs_g": float(breakfast["carbs"]) * breakfast_est_factor,
+        "morning_snack_bolus_carbs_g": float(morning_snack["carbs"]) * morning_snack_est_factor,
+        "lunch_bolus_carbs_g": float(lunch["carbs"]) * lunch_est_factor,
+        "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]) * afternoon_snack_est_factor,
+        "dinner_bolus_carbs_g": float(dinner["carbs"]) * dinner_est_factor,
         "missed_meal_id": missed_meal_id,
         "late_bolus_id": late_bolus_id,
+        "late_bolus_delay_min": late_bolus_delay_min,
     }
 
 
@@ -679,8 +761,10 @@ def _apply_meal(
     current_time: int,
     insulin_carbo_ratio: float,
     bolus_time: int,
+    bolus_carbs_grams: Optional[float] = None,
     missed: bool = False,
     late_bolus: bool = False,
+    late_bolus_delay_min: int = 0,
 ) -> Tuple[float, float]:
     """
     Compute carb intake and insulin bolus for a single meal at current_time.
@@ -703,6 +787,7 @@ def _apply_meal(
     meal_time = meal["time"]
     duration = meal["duration"]
     carbs_grams = float(meal["carbs"])
+    bolus_carbs_g = carbs_grams if bolus_carbs_grams is None else max(0.0, float(bolus_carbs_grams))
     
     # Carb intake during meal consumption
     if meal_time <= current_time < meal_time + duration:
@@ -710,7 +795,7 @@ def _apply_meal(
     
     # Insulin bolus
     if not missed:
-        bolus_amount = carbs_grams / insulin_carbo_ratio  # [units]
+        bolus_amount = bolus_carbs_g / insulin_carbo_ratio  # [units]
         
         # Spread the bolus evenly over BOLUS_DURATION minutes so the total
         # delivered dose stays equal to bolus_amount [U] while avoiding the
@@ -718,8 +803,9 @@ def _apply_meal(
         # trigger the IOB guard and suppress subsequent meal boluses).
         bolus_rate = bolus_amount * 1000 / BOLUS_DURATION  # mU/min
         if late_bolus:
-            # Bolus at meal time
-            if meal_time <= current_time < meal_time + BOLUS_DURATION:
+            # Late-bolus anomaly with variable delay after meal start.
+            bolus_start = meal_time + max(0, late_bolus_delay_min)
+            if bolus_start <= current_time < bolus_start + BOLUS_DURATION:
                 u_inc = bolus_rate
         else:
             # Pre-bolus (15 min before meal)
@@ -780,8 +866,10 @@ def scenario_inputs(
         time,
         insulin_carbo_ratio,
         bolus_lead_min,
+        bolus_carbs_grams=meal_schedule["breakfast_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 1),
         late_bolus=(meal_schedule["late_bolus_id"] == 1),
+        late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += breakfast_u
     d += breakfast_d
@@ -791,8 +879,10 @@ def scenario_inputs(
         time,
         insulin_carbo_ratio,
         bolus_lead_min,
+        bolus_carbs_grams=meal_schedule["morning_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 2),
         late_bolus=(meal_schedule["late_bolus_id"] == 2),
+        late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += morning_snack_u
     d += morning_snack_d
@@ -802,8 +892,10 @@ def scenario_inputs(
         time,
         insulin_carbo_ratio,
         bolus_lead_min,
+        bolus_carbs_grams=meal_schedule["lunch_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 3),
         late_bolus=(meal_schedule["late_bolus_id"] == 3),
+        late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += lunch_u
     d += lunch_d
@@ -813,8 +905,10 @@ def scenario_inputs(
         time,
         insulin_carbo_ratio,
         bolus_lead_min,
+        bolus_carbs_grams=meal_schedule["afternoon_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 4),
         late_bolus=(meal_schedule["late_bolus_id"] == 4),
+        late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += afternoon_snack_u
     d += afternoon_snack_d
@@ -824,8 +918,10 @@ def scenario_inputs(
         time,
         insulin_carbo_ratio,
         bolus_lead_min,
+        bolus_carbs_grams=meal_schedule["dinner_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 5),
         late_bolus=(meal_schedule["late_bolus_id"] == 5),
+        late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += dinner_u
     d += dinner_d
@@ -851,6 +947,8 @@ def scenario_inputs(
 _patient_baseline_cache: dict[tuple[int, int], MealSchedule] = {}
 _meal_cache: dict[tuple[int, int, int], MealSchedule] = {}
 _exercise_cache: dict[tuple[int, int, int], ExerciseSchedule] = {}
+_high_carb_next_day_cache: dict[tuple[int, int], int] = {}
+_patient_bolus_bias_cache: dict[tuple[int, int], float] = {}
 
 
 def scenario_with_cached_meals(
@@ -883,16 +981,50 @@ def scenario_with_cached_meals(
                 rng=patient_rng,
             )
 
+        if patient_key not in _high_carb_next_day_cache:
+            # Use a dedicated deterministic RNG stream so weekly high-carb events
+            # are reproducible without coupling to regular meal jitter draws.
+            phase_rng = _seeded_rng(
+                seed=seed,
+                patient_id=patient_id,
+                scenario=scenario + _HIGH_CARB_STREAM_OFFSET,
+                day=None,
+            )
+            _high_carb_next_day_cache[patient_key] = int(
+                phase_rng.integers(HIGH_MAIN_MEAL_GAP_DAYS_MIN, HIGH_MAIN_MEAL_GAP_DAYS_MAX + 1)
+            )
+
+        if patient_key not in _patient_bolus_bias_cache:
+            bias_rng = _seeded_rng(
+                seed=seed,
+                patient_id=patient_id,
+                scenario=scenario + _BOLUS_ESTIMATION_STREAM_OFFSET,
+                day=None,
+            )
+            _patient_bolus_bias_cache[patient_key] = float(
+                bias_rng.uniform(_PATIENT_BOLUS_BIAS_MIN, _PATIENT_BOLUS_BIAS_MAX)
+            )
+
         day_rng = _seeded_rng(
             seed=seed,
             patient_id=patient_id,
             scenario=scenario,
             day=day,
         )
+
+        high_carb_main_meal: Optional[str] = None
+        next_high_day = _high_carb_next_day_cache[patient_key]
+        if day >= next_high_day:
+            high_carb_main_meal = "lunch" if bool(day_rng.integers(0, 2)) else "dinner"
+            gap_days = int(day_rng.integers(HIGH_MAIN_MEAL_GAP_DAYS_MIN, HIGH_MAIN_MEAL_GAP_DAYS_MAX + 1))
+            _high_carb_next_day_cache[patient_key] = day + gap_days
+
         _meal_cache[cache_key] = _build_daily_schedule_from_baseline(
             baseline=_patient_baseline_cache[patient_key],
             scenario=scenario,
             rng=day_rng,
+            high_carb_main_meal=high_carb_main_meal,
+            patient_bolus_bias=_patient_bolus_bias_cache[patient_key],
         )
 
     if cache_key not in _exercise_cache:
@@ -936,6 +1068,10 @@ def clear_meal_cache() -> None:
     global _meal_cache
     global _patient_baseline_cache
     global _exercise_cache
+    global _high_carb_next_day_cache
+    global _patient_bolus_bias_cache
     _meal_cache = {}
     _patient_baseline_cache = {}
     _exercise_cache = {}
+    _high_carb_next_day_cache = {}
+    _patient_bolus_bias_cache = {}

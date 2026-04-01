@@ -71,11 +71,14 @@ def apply_guard_iob_isf(
             insulin_carbo_ratio_effective = insulin_carbo_ratio_effective * icr_mult
 
     if config.enable_correction_isf:
+        check_interval_min = max(1, int(config.correction_isf_check_interval_min))
+        is_check_minute = (current_abs_min % check_interval_min) == 0
         if current_abs_min > state.correction_isf_active_until_min:
             state.correction_isf_rate_mU_min = 0.0
 
         if (
             (not guard_latched)
+            and is_check_minute
             and g_est > config.correction_isf_target_mmol
             and current_abs_min > state.correction_isf_active_until_min
             and current_abs_min >= state.correction_isf_next_trigger_min

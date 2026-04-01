@@ -52,7 +52,7 @@ class SimulationConfig:
     quality_max_hyper_pct_threshold: float = 75.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L) — slightly tighter than the previous 1.78 to
-    # compensate for the looser safety stack (guard 4.0, rescue 3.5, ISF target 7.5),
+    # compensate for the looser safety stack (guard 4.0, rescue 3.5, ISF target 10.0),
     # keeping CGM sensor readings (which can undershoot true glucose by ~0.7 mmol/L
     # due to AR(1) noise) above ~1.3 mmol/L in the worst case.
     quality_min_glucose_mmol: float = 2.0  # 36 mg/dL / 18.016
@@ -88,7 +88,8 @@ class SimulationConfig:
     iob_max_icr_multiplier: float = 1.6
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 7.5
+    correction_isf_target_mmol: float = 10.0
+    correction_isf_check_interval_min: int = 5
     correction_isf_cooldown_min: int = 60
     correction_isf_max_bolus_units: float = 2.0
     correction_isf_min_bolus_units: float = 0.05

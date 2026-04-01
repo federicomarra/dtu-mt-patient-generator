@@ -5,6 +5,7 @@ import multiprocessing as mp
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from src.export import ExportConfig, export_to_formats
 from src.simulation import run_simulation
@@ -34,21 +35,39 @@ def _worker_run(args: tuple[int, int, SimulationConfig]) -> _WorkerResult:
         worker_config,
         no_export,
         return_results=True,
+        return_diagnostics=True,
         show_progress=False,
         show_summary=False,
     )
     elapsed = time.perf_counter() - t0
 
+    diagnostics: dict[str, float | int] = {
+        "sampled_patients": 0,
+        "accepted_patients": 0,
+        "rejected_patients": 0,
+        "rejection_rate_percent": 0.0,
+    }
+    results: dict[int, dict[str, object]] = {}
+
     if result is None:
-        results: dict[int, dict[str, object]] = {}
+        pass
+    elif isinstance(result, tuple):
+        raw_results_any, diagnostics_any = result
+        raw_results = cast(dict[int, object], raw_results_any)
+        diagnostics = diagnostics_any
+        results = {k: dict(cast(dict[str, object], v)) for k, v in raw_results.items()}
     else:
-        results = {k: dict(v) for k, v in result.items()}
+        raw_results = cast(dict[int, object], result)
+        results = {k: dict(cast(dict[str, object], v)) for k, v in raw_results.items()}
 
     n_accepted = len(results)
     stats: dict[str, object] = {
         "worker_idx": worker_idx,
         "n_requested": n_patients_chunk,
         "n_accepted": n_accepted,
+        "n_sampled": int(diagnostics.get("sampled_patients", n_accepted)),
+        "n_rejected": int(diagnostics.get("rejected_patients", 0)),
+        "rejection_rate_percent": float(diagnostics.get("rejection_rate_percent", 0.0)),
         "elapsed_s": elapsed,
         # Avoid division by zero; use requested as denominator so zero-accepted
         # workers still produce a finite (pessimistic) per-patient estimate.
@@ -136,13 +155,19 @@ def generate_library_parallel(
 
     # ── Final summary ──────────────────────────────────────────────
     accepted_per_worker = [int(s["n_accepted"]) for s in all_stats]  # type: ignore[arg-type]
+    sampled_per_worker = [int(s["n_sampled"]) for s in all_stats]  # type: ignore[arg-type]
+    rejected_per_worker = [int(s["n_rejected"]) for s in all_stats]  # type: ignore[arg-type]
     s_per_patient_vals = [float(s["s_per_patient"]) for s in all_stats]  # type: ignore[arg-type]
     avg_s_per_patient = sum(s_per_patient_vals) / len(s_per_patient_vals) if s_per_patient_vals else 0.0
     acceptance_rate = 100.0 * accepted_total / target_patients if target_patients else 0.0
+    sampled_total = sum(sampled_per_worker)
+    rejected_total = sum(rejected_per_worker)
+    rejection_rate = (100.0 * rejected_total / sampled_total) if sampled_total else 0.0
 
     print(
         f"\n── Summary ───────────────────────────────────────────────────\n"
         f"  accepted / requested : {accepted_total} / {target_patients}  ({acceptance_rate:.1f}%)\n"
+        f"  sampled / rejected   : {sampled_total} / {rejected_total}  (rejection {rejection_rate:.1f}%)\n"
         f"  per-worker accepted  : {accepted_per_worker}\n"
         f"  total elapsed        : {_fmt_elapsed(total_elapsed)}\n"
         f"  avg time / patient   : {avg_s_per_patient:.1f} s  (wall-clock per requested slot)\n"
@@ -162,7 +187,10 @@ def generate_library_parallel(
     metadata: dict[str, object] = {
         "parallel_workers": workers_eff,
         "requested_patients": target_patients,
+        "sampled_patients": sampled_total,
         "accepted_patients": accepted_total,
+        "rejected_patients": rejected_total,
+        "rejection_rate_percent": round(rejection_rate, 3),
         "n_days": config.n_days,
         "random_seed": config.random_seed,
         "enable_plots": False,
@@ -191,11 +219,14 @@ def _print_worker_done(
     idx = int(stats["worker_idx"])          # type: ignore[arg-type]
     accepted = int(stats["n_accepted"])     # type: ignore[arg-type]
     requested = int(stats["n_requested"])   # type: ignore[arg-type]
+    sampled = int(stats["n_sampled"])       # type: ignore[arg-type]
+    rejection_rate = float(stats["rejection_rate_percent"])  # type: ignore[arg-type]
     elapsed = float(stats["elapsed_s"])     # type: ignore[arg-type]
     s_pp = float(stats["s_per_patient"])    # type: ignore[arg-type]
     print(
         f"  worker {idx+1:>2}/{workers_eff}  done  "
-        f"accepted {accepted:>5}/{requested:<5}  "
+        f"accepted {accepted:>5}/{requested:<5}  sampled {sampled:<5}  "
+        f"rej {rejection_rate:4.1f}%  "
         f"worker elapsed {_fmt_elapsed(elapsed)}  "
         f"({s_pp:.1f} s/patient)  "
         f"wall {_fmt_elapsed(wall)}",

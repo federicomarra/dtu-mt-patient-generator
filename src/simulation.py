@@ -89,9 +89,10 @@ def run_simulation(
     export_config: ExportConfig,
     *,
     return_results: bool = False,
+    return_diagnostics: bool = False,
     show_progress: bool = True,
     show_summary: bool = True,
-) -> dict[int, PatientResult] | None:
+) -> dict[int, PatientResult] | tuple[dict[int, PatientResult], dict[str, float | int]] | None:
     """
     Run Monte Carlo simulation of Hovorka model across multiple patients and days.
     
@@ -744,6 +745,7 @@ def run_simulation(
                 "iob_max_icr_multiplier": config.iob_max_icr_multiplier,
                 "enable_correction_isf": config.enable_correction_isf,
                 "correction_isf_target_mmol": config.correction_isf_target_mmol,
+                "correction_isf_check_interval_min": config.correction_isf_check_interval_min,
                 "correction_isf_cooldown_min": config.correction_isf_cooldown_min,
                 "correction_isf_max_bolus_units": config.correction_isf_max_bolus_units,
                 "correction_isf_min_bolus_units": config.correction_isf_min_bolus_units,
@@ -991,6 +993,19 @@ def run_simulation(
         if "agg" not in backend_name_inputs:
             plt.show()  # type: ignore[misc]
 
+    diagnostics: dict[str, float | int] = {
+        "sampled_patients": sampled_patients,
+        "accepted_patients": accepted_patients,
+        "rejected_patients": rejected_patients,
+        "rejected_initial_glucose": rejected_initial_glucose,
+        "rejected_instability": rejected_instability,
+        "rejected_quality_hypo": rejected_quality_hypo,
+        "rejected_quality_hyper": rejected_quality_hyper,
+        "rejection_rate_percent": round(rejection_rate_pct, 3),
+    }
+
     if return_results:
+        if return_diagnostics:
+            return results_tot, diagnostics
         return results_tot
     return None

@@ -62,7 +62,7 @@ MORNING_SNACK_DURATION_MAX: int = 12
 
 # Lunch: moderate (50-75g) with realistic 20-25 min eating window
 LUNCH_CARBS_MIN: int = 50
-LUNCH_CARBS_MAX: int = 75
+LUNCH_CARBS_MAX: int = 75                       # increase to 90 or even higher just to see some variability
 LUNCH_TIME_MIN: int = time_to_minutes(12, 0)
 LUNCH_TIME_MAX: int = time_to_minutes(13, 0)
 LUNCH_DURATION_MIN: int = 20
@@ -166,7 +166,7 @@ _SCENARIO_EXERCISE_MISSED_BOLUS: int = 9
 # 1: Normal day — light incidental AC, no planned workout
 # 2: Active day — moderate aerobic session (30-75 min, 1200-2000 AC)
 # 3: Sedentary day — minimal AC baseline, no workout
-# 4: Long lunch — extended meal absorption (meal anomaly)
+# 4: Long lunch — extended meal absorption (meal anomaly?)
 # 5: Missed bolus — no insulin for one meal (meal anomaly)
 # 6: Late bolus — bolus at meal time instead of pre-meal (meal anomaly)
 # 7: Prolonged aerobic — long session (60-90 min, 1500-2500 AC); triggers glycogen depletion

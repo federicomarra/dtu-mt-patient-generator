@@ -27,8 +27,8 @@ HYPO_MGDL  = 70.0
 HYPER_MGDL = 180.0
 HYPO_MMOL  = 3.9
 HYPER_MMOL = 10.0
-GUARD_MGDL = 75.6   # 4.2 mmol/L
-GUARD_MMOL = 4.2
+GUARD_MGDL = 72.0   # 4.0 mmol/L
+GUARD_MMOL = 4.0
 
 
 def find_latest() -> Path:

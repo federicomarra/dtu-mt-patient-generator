@@ -51,9 +51,11 @@ class SimulationConfig:
     quality_max_hypo_pct_spillover_bonus: float = 2.0
     quality_max_hyper_pct_threshold: float = 75.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
-    # Set to 32 mg/dL (= 1.78 mmol/L) to allow physiologically plausible severe hypos
-    # that can genuinely occur in T1D without discarding otherwise valid trajectories.
-    quality_min_glucose_mmol: float = 1.78  # 32 mg/dL / 18.016
+    # Set to 36 mg/dL (= 2.0 mmol/L) — slightly tighter than the previous 1.78 to
+    # compensate for the looser safety stack (guard 4.0, rescue 3.5, ISF target 7.5),
+    # keeping CGM sensor readings (which can undershoot true glucose by ~0.7 mmol/L
+    # due to AR(1) noise) above ~1.3 mmol/L in the worst case.
+    quality_min_glucose_mmol: float = 2.0  # 36 mg/dL / 18.016
 
     # Burn-in days run the same scenario before recording starts, letting the ETH exercise
     # states (Y, Z post-exercise insulin sensitivity) reach a cyclic steady state so that
@@ -61,13 +63,13 @@ class SimulationConfig:
     n_warmup_days: int = 3
 
     enable_hypo_guard: bool = True
-    hypo_guard_mmol: float = 4.2
+    hypo_guard_mmol: float = 4.0
     hypo_guard_suspend_min: int = 20
     hypo_guard_retrigger_cooldown_min: int = 20
     suppress_meal_bolus_on_guard: bool = False
 
     enable_hypo_rescue: bool = True
-    hypo_rescue_trigger_mmol: float = 3.9
+    hypo_rescue_trigger_mmol: float = 3.5
     hypo_rescue_carbs_g: float = 15.0
     hypo_rescue_duration_min: int = 15
     hypo_rescue_retrigger_cooldown_min: int = 45
@@ -86,7 +88,7 @@ class SimulationConfig:
     iob_max_icr_multiplier: float = 1.6
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 6.5
+    correction_isf_target_mmol: float = 7.5
     correction_isf_cooldown_min: int = 60
     correction_isf_max_bolus_units: float = 2.0
     correction_isf_min_bolus_units: float = 0.05

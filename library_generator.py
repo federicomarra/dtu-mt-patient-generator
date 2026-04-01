@@ -33,9 +33,6 @@ if __name__ == "__main__":
         std_patient=False,
         random_seed=42,
         enable_plots=False,
-        # Slightly tighter quality thresholds for cleaner ML training data
-        quality_max_hypo_pct_threshold=3.0,   # default 4.0
-        quality_max_hyper_pct_threshold=10.0, # default 12.0
     )
 
     export_config = ExportConfig(

@@ -7,7 +7,7 @@ N_SCENARIOS: int = 9
 
 # Sampling weights for scenarios 1-9.
 # Scenarios 1-3 (normal, active, sedentary) — common day-to-day patterns.
-# Scenarios 4-6 (long lunch, missed bolus, late bolus) — meal anomalies, rarer.
+# Scenarios 4-6 (restaurant meal, missed bolus, late bolus) — meal anomalies, rarer.
 # Scenarios 7-9 (prolonged aerobic, anaerobic, exercise + missed bolus) — rare exercise anomalies.
 #
 # Target: ~3:1 normal-to-anomaly ratio. Scenarios 7-9 are intentionally rarer
@@ -20,11 +20,11 @@ N_SCENARIOS: int = 9
 #     (~43%), but scenario 2 represents a specific afternoon workout, not incidental activity.
 #   - Acceptance rate is sensitive to scenario 2 frequency due to the cross-day hypo spillover.
 #
-# ML NOTE — scenario 4 (long lunch) has a weaker and more ambiguous glucose
-# signature than scenarios 5/6. Since scenario_id is exported, downstream ML
-# pipelines can decide whether to treat it as a distinct anomaly class.
+# ML NOTE — scenario 4 (restaurant meal) combines a larger carb load with systematic
+# bolus underestimation and extended absorption, applied to either lunch or dinner (50/50).
+# This gives a strong post-prandial glucose excursion and is a clean ML target.
 # Scenario 8 (anaerobic) uses EXPERIMENTAL parameters — see hovorka_exercise.py.
-_SCENARIO_WEIGHTS_RAW: list[float] = [0.30, 0.18, 0.27, 0.05, 0.05, 0.05, 0.04, 0.04, 0.02]
+_SCENARIO_WEIGHTS_RAW: list[float] = [0.25, 0.18, 0.20, 0.08, 0.08, 0.10, 0.04, 0.04, 0.03]
 SCENARIO_WEIGHTS: list[float] = [
     w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
 ]
@@ -123,7 +123,7 @@ class MealSchedule(TypedDict):
     afternoon_snack_bolus_carbs_g: float
     dinner_bolus_carbs_g: float
     missed_meal_id: Optional[int]  # For missed bolus scenario (1-5 or None)
-    late_bolus_id: Optional[int]   # For late bolus scenario (1-5 or None)
+    late_bolus_ids: set[int]          # For late bolus scenario: set of meal IDs (1-5) with late bolus
     late_bolus_delay_min: int
 
 
@@ -164,8 +164,15 @@ _LUNCH_DINNER_UNDEREST_MIN: float = 0.90
 _LUNCH_DINNER_UNDEREST_MAX: float = 0.98
 _SNACK_EST_MIN: float = 0.96
 _SNACK_EST_MAX: float = 1.04
-_LATE_BOLUS_DELAY_MIN: int = 5
-_LATE_BOLUS_DELAY_MAX: int = 20
+# Scenario 4 (restaurant meal): carb load multiplier and systematic bolus underestimation.
+# Guests routinely underestimate restaurant portions; these ranges are applied on top of the
+# normal meal-estimation noise so the net estimate is well below actual intake.
+_RESTAURANT_CARB_FACTOR_MIN: float = 1.8
+_RESTAURANT_CARB_FACTOR_MAX: float = 2.1
+_RESTAURANT_UNDEREST_MIN: float = 0.70
+_RESTAURANT_UNDEREST_MAX: float = 0.85
+_LATE_BOLUS_DELAY_MIN: int = 20
+_LATE_BOLUS_DELAY_MAX: int = 60
 
 _EXERCISE_START_MIN: int = time_to_minutes(16, 30)
 _EXERCISE_START_MAX: int = time_to_minutes(20, 30)
@@ -186,7 +193,7 @@ _EXERCISE_MIN_GAP_BEFORE_DINNER_MIN: int = 30
 _SCENARIO_NORMAL: int = 1
 _SCENARIO_ACTIVE_AFTERNOON: int = 2
 _SCENARIO_SEDENTARY: int = 3
-_SCENARIO_LONG_LUNCH: int = 4
+_SCENARIO_RESTAURANT_MEAL: int = 4
 _SCENARIO_MISSED_BOLUS: int = 5
 _SCENARIO_LATE_BOLUS: int = 6
 _SCENARIO_PROLONGED_AEROBIC: int = 7
@@ -197,7 +204,7 @@ _SCENARIO_EXERCISE_MISSED_BOLUS: int = 9
 # 1: Normal day — light incidental AC, no planned workout
 # 2: Active day — moderate aerobic session (30-75 min, 1200-2000 AC)
 # 3: Sedentary day — minimal AC baseline, no workout
-# 4: Long lunch — extended meal absorption (meal anomaly?)
+# 4: Restaurant meal — larger carbs (1.3-1.6×), extended duration (2×), under-bolused; lunch or dinner
 # 5: Missed bolus — no insulin for one meal (meal anomaly)
 # 6: Late bolus — bolus at meal time instead of pre-meal (meal anomaly)
 # 7: Prolonged aerobic — long session (60-90 min, 1500-2500 AC); triggers glycogen depletion
@@ -272,21 +279,34 @@ def generate_meal_schedule(
     
     # Scenario-specific modifications
     missed_meal_id: Optional[int] = None
-    late_bolus_id: Optional[int] = None
-    
+    late_bolus_ids: set[int] = set()
+    lunch_bolus_carbs_g_override: Optional[float] = None
+    dinner_bolus_carbs_g_override: Optional[float] = None
+
     if scenario == 4:
-        # Long lunch: extend lunch duration by 2×
-        lunch["duration"] = lunch["duration"] * 2
+        # Restaurant meal: pick lunch or dinner (50/50), larger carbs, extended duration, under-bolused.
+        restaurant_target = "lunch" if bool(rng.integers(0, 2)) else "dinner"
+        carb_factor = float(rng.uniform(_RESTAURANT_CARB_FACTOR_MIN, _RESTAURANT_CARB_FACTOR_MAX))
+        underest = float(rng.uniform(_RESTAURANT_UNDEREST_MIN, _RESTAURANT_UNDEREST_MAX))
+        if restaurant_target == "lunch":
+            lunch["carbs"] = int(round(lunch["carbs"] * carb_factor))
+            lunch["duration"] = lunch["duration"] * 2
+            lunch_bolus_carbs_g_override = float(lunch["carbs"]) * underest
+        else:
+            dinner["carbs"] = int(round(dinner["carbs"] * carb_factor))
+            dinner["duration"] = dinner["duration"] * 2
+            dinner_bolus_carbs_g_override = float(dinner["carbs"]) * underest
     elif scenario == 5:
         # Missed bolus: one of the five meal boluses is skipped (1-5)
         missed_meal_id = int(rng.integers(1, 6))
     elif scenario == 6:
-        # Late bolus: one meal gets bolus at meal time instead of 15 min before
-        late_bolus_id = int(rng.integers(1, 6))
+        # Late bolus: 1-2 randomly chosen meals (uniform, no meal-type bias) get a late bolus
+        k = int(rng.integers(1, 3))  # 1 or 2 meals affected
+        late_bolus_ids = set(int(x) for x in rng.choice(np.arange(1, 6), size=k, replace=False))
     elif scenario == _SCENARIO_EXERCISE_MISSED_BOLUS:
         # Compound anomaly: exercise session + missed bolus for one meal.
         missed_meal_id = int(rng.integers(1, 6))
-    
+
     return {
         "breakfast": breakfast,
         "morning_snack": morning_snack,
@@ -295,11 +315,11 @@ def generate_meal_schedule(
         "dinner": dinner,
         "breakfast_bolus_carbs_g": float(breakfast["carbs"]),
         "morning_snack_bolus_carbs_g": float(morning_snack["carbs"]),
-        "lunch_bolus_carbs_g": float(lunch["carbs"]),
+        "lunch_bolus_carbs_g": lunch_bolus_carbs_g_override if lunch_bolus_carbs_g_override is not None else float(lunch["carbs"]),
         "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]),
-        "dinner_bolus_carbs_g": float(dinner["carbs"]),
+        "dinner_bolus_carbs_g": dinner_bolus_carbs_g_override if dinner_bolus_carbs_g_override is not None else float(dinner["carbs"]),
         "missed_meal_id": missed_meal_id,
-        "late_bolus_id": late_bolus_id,
+        "late_bolus_ids": late_bolus_ids,
         "late_bolus_delay_min": 0,
     }
 
@@ -354,13 +374,19 @@ def _generate_exercise_schedule(
     if enabled and meal_schedule is not None:
         allow_overlap = bool(rng.random() < _EXERCISE_OVERLAP_PROBABILITY)
 
+        snack_skipped = meal_schedule["afternoon_snack"]["carbs"] == 0
         snack_start = int(meal_schedule["afternoon_snack"]["time"])
         snack_end = snack_start + int(meal_schedule["afternoon_snack"]["duration"])
         dinner_start = int(meal_schedule["dinner"]["time"])
 
         if not allow_overlap:
-            # Main dataset mode: keep exercise separated from afternoon snack and dinner.
-            clean_start_min = max(_EXERCISE_START_MIN, snack_end + _EXERCISE_MIN_GAP_AFTER_SNACK_MIN)
+            # Main dataset mode: keep exercise separated from meals.
+            # If the afternoon snack was skipped there is nothing to clear — use the
+            # exercise window start directly as the lower bound.
+            if snack_skipped:
+                clean_start_min = _EXERCISE_START_MIN
+            else:
+                clean_start_min = max(_EXERCISE_START_MIN, snack_end + _EXERCISE_MIN_GAP_AFTER_SNACK_MIN)
             clean_start_max = min(_EXERCISE_START_MAX, dinner_start - duration - _EXERCISE_MIN_GAP_BEFORE_DINNER_MIN)
             if clean_start_min <= clean_start_max:
                 start = int(rng.integers(clean_start_min, clean_start_max + 1))
@@ -368,10 +394,12 @@ def _generate_exercise_schedule(
             # Controlled outlier mode: intentionally allow overlap with snack or dinner.
             overlap_windows: list[tuple[int, int]] = []
 
-            snack_overlap_min = max(_EXERCISE_START_MIN, snack_start - duration + 1)
-            snack_overlap_max = min(_EXERCISE_START_MAX, snack_end - 1)
-            if snack_overlap_min <= snack_overlap_max:
-                overlap_windows.append((snack_overlap_min, snack_overlap_max))
+            # Only add snack overlap window when the snack actually exists.
+            if not snack_skipped:
+                snack_overlap_min = max(_EXERCISE_START_MIN, snack_start - duration + 1)
+                snack_overlap_max = min(_EXERCISE_START_MAX, snack_end - 1)
+                if snack_overlap_min <= snack_overlap_max:
+                    overlap_windows.append((snack_overlap_min, snack_overlap_max))
 
             dinner_overlap_min = max(_EXERCISE_START_MIN, dinner_start - duration + 1)
             dinner_overlap_max = min(_EXERCISE_START_MAX, dinner_start - 1)
@@ -683,17 +711,28 @@ def _build_daily_schedule_from_baseline(
         )
 
     missed_meal_id: Optional[int] = None
-    late_bolus_id: Optional[int] = None
+    late_bolus_ids: set[int] = set()
+    restaurant_meal_target: Optional[str] = None
 
     # Apply scenario perturbations regardless of irregular_day so that ML labels
     # remain consistent: a scenario-5 day always has a missed bolus, etc.
     # irregular_day only affects timing jitter amplitude, not the anomaly label.
     if scenario == 4:
-        lunch["duration"] = lunch["duration"] * 2
+        # Restaurant meal: pick lunch or dinner (50/50), larger carbs + extended duration.
+        restaurant_meal_target = "lunch" if bool(rng.integers(0, 2)) else "dinner"
+        carb_factor = float(rng.uniform(_RESTAURANT_CARB_FACTOR_MIN, _RESTAURANT_CARB_FACTOR_MAX))
+        if restaurant_meal_target == "lunch":
+            lunch["carbs"] = int(round(lunch["carbs"] * carb_factor))
+            lunch["duration"] = lunch["duration"] * 2
+        else:
+            dinner["carbs"] = int(round(dinner["carbs"] * carb_factor))
+            dinner["duration"] = dinner["duration"] * 2
     elif scenario == 5:
         missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
     elif scenario == 6:
-        late_bolus_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
+        # Late bolus: 1-2 randomly chosen meals (uniform, no meal-type bias) get a late bolus
+        k = int(rng.integers(1, 3))  # 1 or 2 meals affected
+        late_bolus_ids = set(int(x) for x in rng.choice(np.arange(1, 6), size=k, replace=False))
     elif scenario == _SCENARIO_EXERCISE_MISSED_BOLUS:
         # Compound anomaly: exercise session + missed bolus for one meal.
         missed_meal_id = int(rng.integers(1, 6))
@@ -719,17 +758,33 @@ def _build_daily_schedule_from_baseline(
     # underestimated than snacks.
     breakfast_est_factor = patient_bolus_bias * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
     morning_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
-    lunch_est_factor = (
-        patient_bolus_bias
-        * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
-        * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
-    )
+    if scenario == _SCENARIO_RESTAURANT_MEAL and restaurant_meal_target == "lunch":
+        # Restaurant lunch: strong systematic underestimation on top of meal noise.
+        lunch_est_factor = (
+            patient_bolus_bias
+            * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+            * float(rng.uniform(_RESTAURANT_UNDEREST_MIN, _RESTAURANT_UNDEREST_MAX))
+        )
+    else:
+        lunch_est_factor = (
+            patient_bolus_bias
+            * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+            * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
+        )
     afternoon_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
-    dinner_est_factor = (
-        patient_bolus_bias
-        * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
-        * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
-    )
+    if scenario == _SCENARIO_RESTAURANT_MEAL and restaurant_meal_target == "dinner":
+        # Restaurant dinner: strong systematic underestimation on top of meal noise.
+        dinner_est_factor = (
+            patient_bolus_bias
+            * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+            * float(rng.uniform(_RESTAURANT_UNDEREST_MIN, _RESTAURANT_UNDEREST_MAX))
+        )
+    else:
+        dinner_est_factor = (
+            patient_bolus_bias
+            * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
+            * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
+        )
 
     late_bolus_delay_min = 0
     if scenario == _SCENARIO_LATE_BOLUS:
@@ -747,7 +802,7 @@ def _build_daily_schedule_from_baseline(
         "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]) * afternoon_snack_est_factor,
         "dinner_bolus_carbs_g": float(dinner["carbs"]) * dinner_est_factor,
         "missed_meal_id": missed_meal_id,
-        "late_bolus_id": late_bolus_id,
+        "late_bolus_ids": late_bolus_ids,
         "late_bolus_delay_min": late_bolus_delay_min,
     }
 
@@ -868,7 +923,7 @@ def scenario_inputs(
         bolus_lead_min,
         bolus_carbs_grams=meal_schedule["breakfast_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 1),
-        late_bolus=(meal_schedule["late_bolus_id"] == 1),
+        late_bolus=(1 in meal_schedule["late_bolus_ids"]),
         late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += breakfast_u
@@ -881,7 +936,7 @@ def scenario_inputs(
         bolus_lead_min,
         bolus_carbs_grams=meal_schedule["morning_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 2),
-        late_bolus=(meal_schedule["late_bolus_id"] == 2),
+        late_bolus=(2 in meal_schedule["late_bolus_ids"]),
         late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += morning_snack_u
@@ -894,7 +949,7 @@ def scenario_inputs(
         bolus_lead_min,
         bolus_carbs_grams=meal_schedule["lunch_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 3),
-        late_bolus=(meal_schedule["late_bolus_id"] == 3),
+        late_bolus=(3 in meal_schedule["late_bolus_ids"]),
         late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += lunch_u
@@ -907,7 +962,7 @@ def scenario_inputs(
         bolus_lead_min,
         bolus_carbs_grams=meal_schedule["afternoon_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 4),
-        late_bolus=(meal_schedule["late_bolus_id"] == 4),
+        late_bolus=(4 in meal_schedule["late_bolus_ids"]),
         late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += afternoon_snack_u
@@ -920,7 +975,7 @@ def scenario_inputs(
         bolus_lead_min,
         bolus_carbs_grams=meal_schedule["dinner_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 5),
-        late_bolus=(meal_schedule["late_bolus_id"] == 5),
+        late_bolus=(5 in meal_schedule["late_bolus_ids"]),
         late_bolus_delay_min=meal_schedule["late_bolus_delay_min"],
     )
     u += dinner_u

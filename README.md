@@ -82,7 +82,7 @@ with configurable timing/carb windows and deterministic cache behavior per patie
 
 **Meal anomalies:**
 
-- `4`: long lunch (extended absorption)
+- `4`: restaurant meal (larger carbs, extended duration, under-bolused; lunch or dinner)
 - `5`: missed bolus (one meal bolus omitted)
 - `6`: late bolus (bolus at meal time instead of pre-meal)
 
@@ -96,9 +96,9 @@ with configurable timing/carb windows and deterministic cache behavior per patie
 
 When `random_scenarios=True`, scenario draws are weighted with `SCENARIO_WEIGHTS`:
 
-- scenarios `1-3`: ~25% each (common)
-- scenarios `4-6`: ~5% each (meal anomalies)
-- scenarios `7-8`: ~4% each, scenario `9`: ~2% (exercise anomalies, rarer)
+- scenarios `1-3`: ~63% combined (normal 25%, active 18%, sedentary 20%)
+- scenarios `4-6`: ~26% combined (restaurant meal 8%, missed bolus 8%, late bolus 10%)
+- scenarios `7-9`: ~11% combined (prolonged aerobic 4%, anaerobic 4%, exercise+missed bolus 3%)
 
 ### Exercise-meal overlap policy
 

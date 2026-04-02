@@ -244,7 +244,7 @@ def analyze_results(file_path: Path) -> None:
             1: "normal",
             2: "active (aerobic)",
             3: "sedentary",
-            4: "long lunch",
+            4: "restaurant meal",
             5: "missed bolus",
             6: "late bolus",
             7: "prolonged aerobic",

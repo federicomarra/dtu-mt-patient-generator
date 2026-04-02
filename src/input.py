@@ -23,7 +23,7 @@ N_SCENARIOS: int = 9
 # bolus underestimation and extended absorption, applied to either lunch or dinner (50/50).
 # This gives a strong post-prandial glucose excursion and is a clean ML target.
 # Scenario 8 (anaerobic) uses EXPERIMENTAL parameters — see hovorka_exercise.py.
-_SCENARIO_WEIGHTS_RAW: list[float] = [0.25, 0.18, 0.20, 0.08, 0.08, 0.10, 0.04, 0.04, 0.03]
+_SCENARIO_WEIGHTS_RAW: list[float] = [0.22, 0.18, 0.17, 0.08, 0.10, 0.12, 0.04, 0.04, 0.05]
 SCENARIO_WEIGHTS: list[float] = [
     w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
 ]
@@ -45,7 +45,7 @@ def time_to_minutes(h: int, m: int) -> int:
 
 # Breakfast: larger, leisurely eating (15-20 min) at consistent time
 BREAKFAST_CARBS_MIN: int = 45
-BREAKFAST_CARBS_MAX: int = 70
+BREAKFAST_CARBS_MAX: int = 85
 BREAKFAST_TIME_MIN: int = time_to_minutes(6, 30)
 BREAKFAST_TIME_MAX: int = time_to_minutes(8, 0)
 BREAKFAST_DURATION_MIN: int = 15
@@ -159,8 +159,8 @@ _PATIENT_BOLUS_BIAS_MIN: float = 0.85
 _PATIENT_BOLUS_BIAS_MAX: float = 1.00
 _MEAL_EST_NOISE_MIN: float = 0.87
 _MEAL_EST_NOISE_MAX: float = 1.13
-_LUNCH_DINNER_UNDEREST_MIN: float = 0.90
-_LUNCH_DINNER_UNDEREST_MAX: float = 0.98
+_LUNCH_DINNER_UNDEREST_MIN: float = 0.82
+_LUNCH_DINNER_UNDEREST_MAX: float = 0.93
 _SNACK_EST_MIN: float = 0.96
 _SNACK_EST_MAX: float = 1.04
 # Scenario 4 (restaurant meal): carb load multiplier and systematic bolus underestimation.
@@ -170,8 +170,8 @@ _RESTAURANT_CARB_FACTOR_MIN: float = 1.8
 _RESTAURANT_CARB_FACTOR_MAX: float = 2.1
 _RESTAURANT_UNDEREST_MIN: float = 0.70
 _RESTAURANT_UNDEREST_MAX: float = 0.85
-_LATE_BOLUS_DELAY_MIN: int = 20
-_LATE_BOLUS_DELAY_MAX: int = 60
+_LATE_BOLUS_DELAY_MIN: int = 30
+_LATE_BOLUS_DELAY_MAX: int = 90
 
 _EXERCISE_START_MIN: int = time_to_minutes(16, 30)
 _EXERCISE_START_MAX: int = time_to_minutes(20, 30)
@@ -303,8 +303,10 @@ def generate_meal_schedule(
     elif scenario == _SCENARIO_MISSED_BOLUS:
         missed_meal_id = int(rng.integers(1, 6))
     elif scenario == _SCENARIO_LATE_BOLUS:
-        k = int(rng.integers(1, 3))  # 1 or 2 meals affected
-        late_bolus_ids = set(int(x) for x in rng.choice(np.arange(1, 6), size=k, replace=False))
+        k = int(rng.integers(1, 3))  # 1 or 2 main meals affected
+        # Restrict to main meals only (breakfast=1, lunch=3, dinner=5); snacks have too few carbs
+        # to produce meaningful post-meal hyperglycaemia when the bolus is delayed.
+        late_bolus_ids = set(int(x) for x in rng.choice([1, 3, 5], size=k, replace=False))
     elif scenario == _SCENARIO_EXERCISE_MISSED_BOLUS:
         # Compound anomaly: exercise session + missed bolus for one meal.
         missed_meal_id = int(rng.integers(1, 6))
@@ -769,9 +771,10 @@ def _build_daily_schedule_from_baseline(
     elif scenario == 5:
         missed_meal_id = int(rng.integers(1, 6))  # 1-5 for the 5 meals
     elif scenario == 6:
-        # Late bolus: 1-2 randomly chosen meals (uniform, no meal-type bias) get a late bolus
-        k = int(rng.integers(1, 3))  # 1 or 2 meals affected
-        late_bolus_ids = set(int(x) for x in rng.choice(np.arange(1, 6), size=k, replace=False))
+        # Late bolus: 1-2 main meals get a delayed bolus. Snacks (IDs 2, 4) excluded — their
+        # small carb load produces negligible hyper even with a full bolus delay.
+        k = int(rng.integers(1, 3))  # 1 or 2 main meals affected
+        late_bolus_ids = set(int(x) for x in rng.choice([1, 3, 5], size=k, replace=False))
     elif scenario == _SCENARIO_EXERCISE_MISSED_BOLUS:
         # Compound anomaly: exercise session + missed bolus for one meal.
         missed_meal_id = int(rng.integers(1, 6))

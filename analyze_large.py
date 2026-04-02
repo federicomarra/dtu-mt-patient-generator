@@ -112,7 +112,10 @@ def analyze(file_path: Path) -> None:
 
     # ── Detect unit from first row group ─────────────────────────────────────
     first_batch = cast(pd.DataFrame, pf.read_row_group(0, columns=["blood_glucose"]).to_pandas())  # type: ignore[union-attr]
-    is_mgdl = float(first_batch["blood_glucose"].max()) > 30
+    # mmol/L physiological ceiling is ~33 mmol/L (instability threshold 30.53 + sensor noise).
+    # mg/dL values are always ≥ 18× higher (e.g. 50 mg/dL = 2.8 mmol/L minimum).
+    # Threshold at 50 safely separates the two unit spaces.
+    is_mgdl = float(first_batch["blood_glucose"].max()) > 50
     unit = "mg/dL" if is_mgdl else "mmol/L"
     hypo_thr  = HYPO_MGDL  if is_mgdl else HYPO_MMOL
     hyper_thr = HYPER_MGDL if is_mgdl else HYPER_MMOL

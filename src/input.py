@@ -61,7 +61,7 @@ MORNING_SNACK_DURATION_MAX: int = 12
 
 # Lunch: moderate (50-75g) with realistic 20-25 min eating window
 LUNCH_CARBS_MIN: int = 50
-LUNCH_CARBS_MAX: int = 75                       # increase to 90 or even higher just to see some variability
+LUNCH_CARBS_MAX: int = 95
 LUNCH_TIME_MIN: int = time_to_minutes(12, 0)
 LUNCH_TIME_MAX: int = time_to_minutes(13, 0)
 LUNCH_DURATION_MIN: int = 20
@@ -82,7 +82,7 @@ SNACK_SKIP_BOTH_PROB: float = 0.07
 
 # Dinner: moderate with realistic 20-25 min and earlier timing for active schedule
 DINNER_CARBS_MIN: int = 50
-DINNER_CARBS_MAX: int = 75
+DINNER_CARBS_MAX: int = 95
 DINNER_TIME_MIN: int = time_to_minutes(18, 30)
 DINNER_TIME_MAX: int = time_to_minutes(20, 0)
 DINNER_DURATION_MIN: int = 20
@@ -155,10 +155,10 @@ _IRREGULAR_TIME_JITTER_MIN: int = -20
 _IRREGULAR_TIME_JITTER_MAX: int = 21
 
 # Bolus uses estimated carbs; gut absorption uses actual meal carbs.
-_PATIENT_BOLUS_BIAS_MIN: float = 0.90
-_PATIENT_BOLUS_BIAS_MAX: float = 1.05
-_MEAL_EST_NOISE_MIN: float = 0.90
-_MEAL_EST_NOISE_MAX: float = 1.10
+_PATIENT_BOLUS_BIAS_MIN: float = 0.85
+_PATIENT_BOLUS_BIAS_MAX: float = 1.00
+_MEAL_EST_NOISE_MIN: float = 0.87
+_MEAL_EST_NOISE_MAX: float = 1.13
 _LUNCH_DINNER_UNDEREST_MIN: float = 0.90
 _LUNCH_DINNER_UNDEREST_MAX: float = 0.98
 _SNACK_EST_MIN: float = 0.96

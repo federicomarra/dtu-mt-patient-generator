@@ -88,9 +88,9 @@ class SimulationConfig:
     iob_max_icr_multiplier: float = 1.6
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 10.0
+    correction_isf_target_mmol: float = 14.0
     correction_isf_check_interval_min: int = 5
-    correction_isf_cooldown_min: int = 60
+    correction_isf_cooldown_min: int = 90
     correction_isf_max_bolus_units: float = 2.0
     correction_isf_min_bolus_units: float = 0.05
     correction_isf_bolus_duration_min: int = 5

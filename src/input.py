@@ -204,7 +204,7 @@ _SCENARIO_EXERCISE_MISSED_BOLUS: int = 9
 # 1: Normal day — light incidental AC, no planned workout
 # 2: Active day — moderate aerobic session (30-75 min, 1200-2000 AC)
 # 3: Sedentary day — minimal AC baseline, no workout
-# 4: Restaurant meal — larger carbs (1.3-1.6×), extended duration (2×), under-bolused; lunch or dinner
+# 4: Restaurant meal — larger carbs (1.8-2.1×), extended duration (2×), under-bolused; lunch or dinner
 # 5: Missed bolus — no insulin for one meal (meal anomaly)
 # 6: Late bolus — bolus at meal time instead of pre-meal (meal anomaly)
 # 7: Prolonged aerobic — long session (60-90 min, 1500-2500 AC); triggers glycogen depletion

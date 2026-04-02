@@ -18,10 +18,14 @@ from src.simulation_utils import create_export_directory
 _WorkerResult = tuple[dict[int, dict[str, object]], dict[str, object]]
 
 
-def _worker_run(args: tuple[int, int, SimulationConfig]) -> _WorkerResult:
-    worker_idx, n_patients_chunk, base_config = args
+def _worker_run(args: tuple[int, int, SimulationConfig, int]) -> _WorkerResult:
+    worker_idx, n_patients_chunk, base_config, patient_offset = args
 
-    worker_seed = (base_config.random_seed or 0) + (worker_idx * 10000)
+    # Shift the seed by the cumulative number of patients assigned to prior workers
+    # so that worker i's patient j maps to global patient (patient_offset + j) in
+    # the meal-schedule RNG space. This avoids the collision where workers with the
+    # same (worker_idx + local_patient_id) sum produce identical meal schedules.
+    worker_seed = (base_config.random_seed or 0) + (patient_offset * 10000)
     worker_config = replace(
         base_config,
         n_patients=n_patients_chunk,
@@ -122,8 +126,16 @@ def generate_library_parallel(
         f"─────────────────────────────────────────────────────────────"
     )
 
-    args: list[tuple[int, int, SimulationConfig]] = [
-        (idx, n_chunk, config) for idx, n_chunk in enumerate(chunks)
+    # Cumulative patient offsets so _worker_run can compute a globally unique seed
+    # for every local patient ID without overlap between workers.
+    cumulative_offsets: list[int] = []
+    running = 0
+    for c in chunks:
+        cumulative_offsets.append(running)
+        running += c
+
+    args: list[tuple[int, int, SimulationConfig, int]] = [
+        (idx, n_chunk, config, cumulative_offsets[idx]) for idx, n_chunk in enumerate(chunks)
     ]
 
     t_start = time.perf_counter()

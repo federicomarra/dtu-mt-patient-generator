@@ -38,7 +38,8 @@ class DayResult(TypedDict):
     cho_mg_min: np.ndarray
     scenario_id: int
     missed_meal_id: int | None   # which meal (1-5) had no bolus; None if N/A
-    late_bolus_id: int | None    # which meal (1-5) had a late bolus; None if N/A
+    late_bolus_ids: list[int]    # meal IDs (1-5) with a late bolus; empty for N/A
+    late_bolus_id: int | None    # first (lowest) late-bolus meal ID, or None; kept for export compat
 
 
 class PatientResult(TypedDict):
@@ -477,7 +478,8 @@ def run_simulation(
                 # so get_cached_meal_schedule is guaranteed to find the entry here.
                 meal_schedule = get_cached_meal_schedule(sim_patient_id, day_idx, scenario)
                 missed_meal_id = int(meal_schedule["missed_meal_id"]) if meal_schedule and meal_schedule["missed_meal_id"] is not None else None
-                late_bolus_id = int(meal_schedule["late_bolus_id"]) if meal_schedule and meal_schedule["late_bolus_id"] is not None else None
+                _late_ids: list[int] = sorted(meal_schedule["late_bolus_ids"]) if meal_schedule else []
+                late_bolus_id: int | None = _late_ids[0] if _late_ids else None
 
                 # Store results for this day
                 results_tot[sim_patient_id]["days"][day_idx] = {
@@ -486,6 +488,7 @@ def run_simulation(
                     "cho_mg_min": day_cho,
                     "scenario_id": scenario,
                     "missed_meal_id": missed_meal_id,
+                    "late_bolus_ids": _late_ids,
                     "late_bolus_id": late_bolus_id,
                 }
                 # Day 0 is kept in full (0..1440 = 1441 points).

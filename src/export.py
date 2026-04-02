@@ -107,6 +107,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
             scenario_id: Optional[int]
             missed_meal_id: Optional[int]
             late_bolus_id: Optional[int]
+            late_bolus_ids_val: list[int]
             if isinstance(values, Mapping):
                 values_arr = np.asarray(values.get("blood_glucose", []), dtype=np.float64)
                 # Backward-compatible read: accept both legacy and explicit-unit keys.
@@ -122,6 +123,9 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 scenario_id = values.get("scenario_id", None)  # type: ignore[assignment]
                 missed_meal_id = values.get("missed_meal_id", None)  # type: ignore[assignment]
                 late_bolus_id = values.get("late_bolus_id", None)  # type: ignore[assignment]
+                # Full list of late-bolus meal IDs (empty list = no late bolus).
+                _raw_ids = values.get("late_bolus_ids", None)
+                late_bolus_ids_val = list(int(x) for x in _raw_ids) if _raw_ids else []     #type: ignore[assignment]
             else:
                 values_arr = np.asarray(values, dtype=np.float64)
                 insulin_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
@@ -129,6 +133,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 scenario_id = None
                 missed_meal_id = None
                 late_bolus_id = None
+                late_bolus_ids_val = []
 
             if values_arr.size == 0:
                 continue
@@ -166,6 +171,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "scenario_id": scenario_id,
                 "missed_meal_id": missed_meal_id,
                 "late_bolus_id": late_bolus_id,
+                "late_bolus_ids": [late_bolus_ids_val] * values_arr.size,
             }))
 
     if not blocks:
@@ -183,6 +189,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "scenario_id",
                 "missed_meal_id",
                 "late_bolus_id",
+                "late_bolus_ids",
             ]
         )
 

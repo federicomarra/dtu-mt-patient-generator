@@ -237,6 +237,10 @@ def run_simulation(
                         x_s = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0, posinf=1e6, neginf=-1e6)
                         np.clip(x_s, -1e6, 1e6, out=x_s)
                         _cm = int(np.floor(t))
+                        # _abs is used only for the warmup controller's latch timers
+                        # (which are discarded after warmup). It counts from 0 regardless
+                        # of the negative cache-day index (_wu_cache_day) used for meals,
+                        # so the two time references intentionally differ here.
                         _abs = _wu_idx * minutes_per_day + _cm
                         _g = float(x_s[0]) / vg_bw if vg_bw > 0.0 else 0.0
                         _iob = max(0.0, float(x_s[2]) + float(x_s[3])) / 1000.0

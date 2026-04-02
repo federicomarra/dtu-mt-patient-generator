@@ -18,7 +18,6 @@ N_SCENARIOS: int = 9
 #     making two consecutive days exercise-affected; reducing frequency limits this coupling.
 #   - Real-world adherence to structured afternoon exercise in T1D adults is ~3 sessions/week
 #     (~43%), but scenario 2 represents a specific afternoon workout, not incidental activity.
-#   - Acceptance rate is sensitive to scenario 2 frequency due to the cross-day hypo spillover.
 #
 # ML NOTE — scenario 4 (restaurant meal) combines a larger carb load with systematic
 # bolus underestimation and extended absorption, applied to either lunch or dinner (50/50).
@@ -778,9 +777,11 @@ def _build_daily_schedule_from_baseline(
         missed_meal_id = int(rng.integers(1, 6))
 
     # Once every 1-2 weeks, increase either lunch or dinner carbs (not both).
-    if high_carb_main_meal == "lunch":
+    # Skip if the restaurant scenario already modified that meal — the restaurant
+    # carb factor takes precedence and must not be overwritten.
+    if high_carb_main_meal == "lunch" and restaurant_meal_target != "lunch":
         lunch["carbs"] = int(rng.integers(HIGH_MAIN_MEAL_CARBS_MIN, HIGH_MAIN_MEAL_CARBS_MAX + 1))
-    elif high_carb_main_meal == "dinner":
+    elif high_carb_main_meal == "dinner" and restaurant_meal_target != "dinner":
         dinner["carbs"] = int(rng.integers(HIGH_MAIN_MEAL_CARBS_MIN, HIGH_MAIN_MEAL_CARBS_MAX + 1))
 
     # Some days snacks are skipped entirely (no carbs => no snack bolus).
@@ -795,9 +796,11 @@ def _build_daily_schedule_from_baseline(
             afternoon_snack["carbs"] = 0
 
     # Meal-level carb estimation for bolus: lunch/dinner are more often
-    # underestimated than snacks.
+    # underestimated than snacks. Skipped snacks (carbs == 0) still draw from the
+    # RNG so the stream stays consistent whether or not the snack was skipped.
     breakfast_est_factor = patient_bolus_bias * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
-    morning_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    morning_snack_noise = float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    morning_snack_est_factor = 0.0 if morning_snack["carbs"] == 0 else patient_bolus_bias * morning_snack_noise
     if scenario == _SCENARIO_RESTAURANT_MEAL and restaurant_meal_target == "lunch":
         # Restaurant lunch: strong systematic underestimation on top of meal noise.
         lunch_est_factor = (
@@ -811,7 +814,8 @@ def _build_daily_schedule_from_baseline(
             * float(rng.uniform(_MEAL_EST_NOISE_MIN, _MEAL_EST_NOISE_MAX))
             * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
         )
-    afternoon_snack_est_factor = patient_bolus_bias * float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    afternoon_snack_noise = float(rng.uniform(_SNACK_EST_MIN, _SNACK_EST_MAX))
+    afternoon_snack_est_factor = 0.0 if afternoon_snack["carbs"] == 0 else patient_bolus_bias * afternoon_snack_noise
     if scenario == _SCENARIO_RESTAURANT_MEAL and restaurant_meal_target == "dinner":
         # Restaurant dinner: strong systematic underestimation on top of meal noise.
         dinner_est_factor = (

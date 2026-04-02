@@ -114,7 +114,14 @@ def measure_glycemia(
     if sensor_state is None:
         sensor_state = {}
 
-    prev_display = float(sensor_state.get("display", true_glucose))
+    # Seed display on first call so the lag filter has a consistent initial
+    # condition across the trajectory. At fasting steady state true_glucose is
+    # constant, so no lag accumulates — the first measurement is correct.
+    # When the caller wants lag to apply immediately (e.g. non-steady-state
+    # start), pre-populate sensor_state["display"] before the first call.
+    if "display" not in sensor_state:
+        sensor_state["display"] = true_glucose
+    prev_display = float(sensor_state["display"])
     prev_error = float(sensor_state.get("error", 0.0))
 
     lagged_true = prev_display + lag_alpha * (true_glucose - prev_display)

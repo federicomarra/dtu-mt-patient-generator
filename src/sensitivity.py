@@ -212,7 +212,7 @@ def find_insulin_sensitivity_factor(
     initial_isf: float = 3.1,
     initial_glucose_mmol: float = 13.0,
     target_glycemia_mmol: float = 5.5,
-    measurement_time_min: int = 120,
+    measurement_time_min: int = 180,
     tolerance_mmol: float = 0.3,
     max_iterations: int = 40,
     print_progress: bool = False,
@@ -318,9 +318,9 @@ def find_insulin_sensitivity_factor(
 
 
 def find_sensitivities(
-    p: ParameterSet=get_base_params(),
-    cho_grams: float=50.0,
-    print_progress: bool=False
+    p: ParameterSet | None = None,
+    cho_grams: float = 50.0,
+    print_progress: bool = False,
 ) -> tuple[float, float]:
     """
     Find ICR and ISF for a given parameter set.
@@ -341,6 +341,8 @@ def find_sensitivities(
     isf: float
         Insulin sensitivity factor.
     """
+    if p is None:
+        p = get_base_params()
     # Find ICR
     icr = find_icr(p, cho_grams=cho_grams, print_progress=print_progress)
     # Find ISF

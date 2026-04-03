@@ -209,6 +209,12 @@ def run_simulation(
             patient_params["ICR"] = insulin_carbo_ratio_patient
             patient_params["ISF"] = insulin_sensitivity_patient
 
+            # Save base SI values for per-day perturbation; restore after all days.
+            # SI1/SI2/SI3 are the insulin-action sensitivity coefficients in the ODE.
+            _base_SI1 = float(patient_params["SI1"])
+            _base_SI2 = float(patient_params["SI2"])
+            _base_SI3 = float(patient_params["SI3"])
+
             # Track state across days
             current_state: np.ndarray = np.array(x0_initial, dtype=np.float64)
 
@@ -318,7 +324,17 @@ def run_simulation(
                     scenario = int(rng.choice(N_SCENARIOS, p=SCENARIO_WEIGHTS)) + 1
                 else:
                     scenario = int(config.fixed_scenario)
-            
+
+                # Per-day insulin sensitivity perturbation: ±15% CV, bounded ±35%.
+                # Mimics real T1D day-to-day variability (sleep, minor illness, stress).
+                # Scales SI1/SI2/SI3 in patient_params so the ODE closure picks it up.
+                # ISF used in the correction guard is scaled inversely (ISF ∝ 1/SI).
+                si_day_factor = float(np.clip(rng.normal(1.0, 0.15), 0.65, 1.40))
+                patient_params["SI1"] = _base_SI1 * si_day_factor
+                patient_params["SI2"] = _base_SI2 * si_day_factor
+                patient_params["SI3"] = _base_SI3 * si_day_factor
+                insulin_sensitivity_day = insulin_sensitivity_patient / si_day_factor
+
                 # Time span for this day
                 t_span = (0, minutes_per_day)
                 t_eval_day = np.arange(0, minutes_per_day + 1)  # Every minute
@@ -345,7 +361,7 @@ def run_simulation(
                         iob_u=iob_u,
                         basal_hourly_patient=basal_hourly_patient,
                         insulin_carbo_ratio_patient=insulin_carbo_ratio_patient,
-                        insulin_sensitivity_patient=insulin_sensitivity_patient,
+                        insulin_sensitivity_patient=insulin_sensitivity_day,
                         config=config,
                         state=controller_state,
                     )
@@ -459,7 +475,7 @@ def run_simulation(
                         sensor_state=sensor_cgm_state,
                         rng=rng,
                         output_unit="mmol/L",
-                        min_glucose=0.0,
+                        min_glucose=config.cgm_min_glucose_mmol,
                     )
                 if available_points < n_measurements:
                     glycemia_day_array[available_points:] = glycemia_day_array[available_points - 1]
@@ -562,6 +578,12 @@ def run_simulation(
                     if day_hyper_pct > quality_max_hyper_pct:
                         _early_reject_reason = "quality_hyper"
                         break
+
+            # Restore base SI values so exported patient_params reflects the
+            # calibrated baseline, not the last day's perturbed values.
+            patient_params["SI1"] = _base_SI1
+            patient_params["SI2"] = _base_SI2
+            patient_params["SI3"] = _base_SI3
 
             # Handle early rejection from the day loop.
             if _early_reject_reason is not None:

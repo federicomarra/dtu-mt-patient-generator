@@ -121,6 +121,14 @@ class MealSchedule(TypedDict):
     lunch_bolus_carbs_g: float
     afternoon_snack_bolus_carbs_g: float
     dinner_bolus_carbs_g: float
+    # Per-meal bolus lead time [min]: positive = pre-meal, 0 = at onset, negative = post-meal.
+    # Sampled from a mixture distribution (see _sample_bolus_lead).
+    # Scenario 6 (late bolus) ignores these for affected meals and uses late_bolus_delay_mins instead.
+    breakfast_bolus_lead_min: int
+    morning_snack_bolus_lead_min: int
+    lunch_bolus_lead_min: int
+    afternoon_snack_bolus_lead_min: int
+    dinner_bolus_lead_min: int
     missed_meal_id: Optional[int]  # For missed bolus scenario (1-5 or None)
     late_bolus_ids: set[int]                # For late bolus scenario: set of meal IDs (1-5) with late bolus
     late_bolus_delay_mins: dict[int, int]   # meal_id → delay in minutes; empty for non-sc6 days
@@ -147,18 +155,18 @@ _SCENARIO_SEED_FACTOR: int = 1_000_000
 _DAY_SEED_FACTOR: int = 97
 _HIGH_CARB_STREAM_OFFSET: int = 31
 _BOLUS_ESTIMATION_STREAM_OFFSET: int = 53
-_SMALL_TIME_JITTER_MIN: int = -5
-_SMALL_TIME_JITTER_MAX: int = 6
+_SMALL_TIME_JITTER_MIN: int = -15
+_SMALL_TIME_JITTER_MAX: int = 16
 _SMALL_CARB_JITTER_PCT: float = 0.06
-_IRREGULAR_DAY_PROBABILITY: float = 0.15
-_IRREGULAR_TIME_JITTER_MIN: int = -20
-_IRREGULAR_TIME_JITTER_MAX: int = 21
+_IRREGULAR_DAY_PROBABILITY: float = 0.30
+_IRREGULAR_TIME_JITTER_MIN: int = -40
+_IRREGULAR_TIME_JITTER_MAX: int = 41
 
 # Bolus uses estimated carbs; gut absorption uses actual meal carbs.
-_PATIENT_BOLUS_BIAS_MIN: float = 0.85
-_PATIENT_BOLUS_BIAS_MAX: float = 1.00
-_MEAL_EST_NOISE_MIN: float = 0.87
-_MEAL_EST_NOISE_MAX: float = 1.13
+_PATIENT_BOLUS_BIAS_MIN: float = 0.78
+_PATIENT_BOLUS_BIAS_MAX: float = 0.95
+_MEAL_EST_NOISE_MIN: float = 0.80
+_MEAL_EST_NOISE_MAX: float = 1.20
 _LUNCH_DINNER_UNDEREST_MIN: float = 0.82
 _LUNCH_DINNER_UNDEREST_MAX: float = 0.93
 _SNACK_EST_MIN: float = 0.96
@@ -172,6 +180,19 @@ _RESTAURANT_UNDEREST_MIN: float = 0.70
 _RESTAURANT_UNDEREST_MAX: float = 0.85
 _LATE_BOLUS_DELAY_MIN: int = 30
 _LATE_BOLUS_DELAY_MAX: int = 90
+
+# Per-meal bolus lead time distribution (minutes before meal start).
+# Positive = pre-meal, 0 = at meal onset, negative = post-meal (bolus after eating begins).
+# Based on T1D real-world studies: ~60% pre-meal, ~25% at onset, ~15% post-meal.
+_BOLUS_LEAD_PRE_MIN: int = 5
+_BOLUS_LEAD_PRE_MAX: int = 20
+_BOLUS_LEAD_AT_MIN: int = 0
+_BOLUS_LEAD_AT_MAX: int = 4
+_BOLUS_LEAD_POST_MIN: int = -20   # negative → bolus delivered N min after meal starts
+_BOLUS_LEAD_POST_MAX: int = -1
+_BOLUS_LEAD_PRE_PROB: float = 0.60
+_BOLUS_LEAD_AT_PROB: float = 0.25
+# post-meal probability is implicitly 1 − pre − at = 0.15
 
 _EXERCISE_START_MIN: int = time_to_minutes(16, 30)
 _EXERCISE_START_MAX: int = time_to_minutes(20, 30)
@@ -348,6 +369,14 @@ def generate_meal_schedule(
             * float(rng.uniform(_LUNCH_DINNER_UNDEREST_MIN, _LUNCH_DINNER_UNDEREST_MAX))
         )
 
+    # Per-meal bolus lead time — sampled after all estimation factors to keep
+    # existing RNG stream unaffected up to this point.
+    breakfast_lead          = _sample_bolus_lead(rng)
+    morning_snack_lead      = _sample_bolus_lead(rng)
+    lunch_lead              = _sample_bolus_lead(rng)
+    afternoon_snack_lead    = _sample_bolus_lead(rng)
+    dinner_lead             = _sample_bolus_lead(rng)
+
     return {
         "breakfast": breakfast,
         "morning_snack": morning_snack,
@@ -359,6 +388,11 @@ def generate_meal_schedule(
         "lunch_bolus_carbs_g": float(lunch["carbs"]) * lunch_est_factor,
         "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]) * afternoon_snack_est_factor,
         "dinner_bolus_carbs_g": float(dinner["carbs"]) * dinner_est_factor,
+        "breakfast_bolus_lead_min": breakfast_lead,
+        "morning_snack_bolus_lead_min": morning_snack_lead,
+        "lunch_bolus_lead_min": lunch_lead,
+        "afternoon_snack_bolus_lead_min": afternoon_snack_lead,
+        "dinner_bolus_lead_min": dinner_lead,
         "missed_meal_id": missed_meal_id,
         "late_bolus_ids": late_bolus_ids,
         "late_bolus_delay_mins": late_bolus_delay_mins,
@@ -367,6 +401,22 @@ def generate_meal_schedule(
 
 def _clamp_int(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def _sample_bolus_lead(rng: np.random.Generator) -> int:
+    """Draw per-meal bolus lead time from a realistic T1D distribution.
+
+    Draws 2 values from rng (category draw + value draw).
+    Returns minutes before meal start; negative = post-meal delivery.
+    """
+    r = float(rng.random())
+    if r < _BOLUS_LEAD_PRE_PROB:
+        return int(rng.integers(_BOLUS_LEAD_PRE_MIN, _BOLUS_LEAD_PRE_MAX + 1))
+    elif r < _BOLUS_LEAD_PRE_PROB + _BOLUS_LEAD_AT_PROB:
+        return int(rng.integers(_BOLUS_LEAD_AT_MIN, _BOLUS_LEAD_AT_MAX + 1))
+    else:
+        # Post-meal: rng.integers(low, high) with negative range needs low < high
+        return int(rng.integers(_BOLUS_LEAD_POST_MIN, _BOLUS_LEAD_POST_MAX + 1))
 
 
 def _generate_exercise_schedule(
@@ -839,6 +889,14 @@ def _build_daily_schedule_from_baseline(
         for meal_id in late_bolus_ids
     } if scenario == _SCENARIO_LATE_BOLUS else {}
 
+    # Per-meal bolus lead time — drawn after all other estimation/delay draws so the
+    # existing RNG stream for estimation factors and sc6 delays is unchanged.
+    breakfast_lead          = _sample_bolus_lead(rng)
+    morning_snack_lead      = _sample_bolus_lead(rng)
+    lunch_lead              = _sample_bolus_lead(rng)
+    afternoon_snack_lead    = _sample_bolus_lead(rng)
+    dinner_lead             = _sample_bolus_lead(rng)
+
     return {
         "breakfast": breakfast,
         "morning_snack": morning_snack,
@@ -850,6 +908,11 @@ def _build_daily_schedule_from_baseline(
         "lunch_bolus_carbs_g": float(lunch["carbs"]) * lunch_est_factor,
         "afternoon_snack_bolus_carbs_g": float(afternoon_snack["carbs"]) * afternoon_snack_est_factor,
         "dinner_bolus_carbs_g": float(dinner["carbs"]) * dinner_est_factor,
+        "breakfast_bolus_lead_min": breakfast_lead,
+        "morning_snack_bolus_lead_min": morning_snack_lead,
+        "lunch_bolus_lead_min": lunch_lead,
+        "afternoon_snack_bolus_lead_min": afternoon_snack_lead,
+        "dinner_bolus_lead_min": dinner_lead,
         "missed_meal_id": missed_meal_id,
         "late_bolus_ids": late_bolus_ids,
         "late_bolus_delay_mins": late_bolus_delay_mins_built,
@@ -962,14 +1025,14 @@ def scenario_inputs(
             meal_schedule=meal_schedule,
         )
     
-    bolus_lead_min = PREANNOUNCED_BOLUS_TIME
-
-    # Apply meals
+    # Apply meals — each uses its own per-meal bolus lead time.
+    # Scenario 6 (late bolus) overrides the lead entirely via late_bolus_delay_min;
+    # for all other scenarios the lead drives realistic pre/at/post-meal timing.
     breakfast_u, breakfast_d = _apply_meal(
         meal_schedule["breakfast"],
         time,
         insulin_carbo_ratio,
-        bolus_lead_min,
+        meal_schedule["breakfast_bolus_lead_min"],
         bolus_carbs_grams=meal_schedule["breakfast_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 1),
         late_bolus=(1 in meal_schedule["late_bolus_ids"]),
@@ -982,7 +1045,7 @@ def scenario_inputs(
         meal_schedule["morning_snack"],
         time,
         insulin_carbo_ratio,
-        bolus_lead_min,
+        meal_schedule["morning_snack_bolus_lead_min"],
         bolus_carbs_grams=meal_schedule["morning_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 2),
         late_bolus=(2 in meal_schedule["late_bolus_ids"]),
@@ -990,12 +1053,12 @@ def scenario_inputs(
     )
     u += morning_snack_u
     d += morning_snack_d
-    
+
     lunch_u, lunch_d = _apply_meal(
         meal_schedule["lunch"],
         time,
         insulin_carbo_ratio,
-        bolus_lead_min,
+        meal_schedule["lunch_bolus_lead_min"],
         bolus_carbs_grams=meal_schedule["lunch_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 3),
         late_bolus=(3 in meal_schedule["late_bolus_ids"]),
@@ -1008,7 +1071,7 @@ def scenario_inputs(
         meal_schedule["afternoon_snack"],
         time,
         insulin_carbo_ratio,
-        bolus_lead_min,
+        meal_schedule["afternoon_snack_bolus_lead_min"],
         bolus_carbs_grams=meal_schedule["afternoon_snack_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 4),
         late_bolus=(4 in meal_schedule["late_bolus_ids"]),
@@ -1016,12 +1079,12 @@ def scenario_inputs(
     )
     u += afternoon_snack_u
     d += afternoon_snack_d
-    
+
     dinner_u, dinner_d = _apply_meal(
         meal_schedule["dinner"],
         time,
         insulin_carbo_ratio,
-        bolus_lead_min,
+        meal_schedule["dinner_bolus_lead_min"],
         bolus_carbs_grams=meal_schedule["dinner_bolus_carbs_g"],
         missed=(meal_schedule["missed_meal_id"] == 5),
         late_bolus=(5 in meal_schedule["late_bolus_ids"]),

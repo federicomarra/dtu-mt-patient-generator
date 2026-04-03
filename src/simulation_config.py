@@ -87,6 +87,11 @@ class SimulationConfig:
     iob_full_attenuation_units: float = 8.0
     iob_max_icr_multiplier: float = 1.6
 
+    # Lower clamp for CGM readings. Real sensors report "LOW" below ~2.2 mmol/L;
+    # AR(1) noise accumulation can otherwise push readings below 1.3 mmol/L even
+    # when true glucose is at the 2.0 mmol/L rejection floor.
+    cgm_min_glucose_mmol: float = 1.5
+
     enable_correction_isf: bool = True
     correction_isf_target_mmol: float = 14.0
     correction_isf_check_interval_min: int = 5

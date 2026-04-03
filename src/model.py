@@ -117,6 +117,26 @@ def _get_input_values(
     )
 
 
+def _dawn_egp_factor(t_min: float) -> float:
+    """Circadian EGP0 scaling for the dawn phenomenon.
+
+    Hepatic glucose production rises ~25% at peak (06:00, 360 min) driven by
+    cortisol and GH surges, tapering linearly from 04:00 (240 min) to 08:00
+    (480 min).  Outside that window the factor is 1.0 (no modification).
+    """
+    DAWN_START = 240.0   # 04:00
+    DAWN_PEAK  = 360.0   # 06:00
+    DAWN_END   = 480.0   # 08:00
+    DAWN_AMP   = 0.25    # 25% peak EGP elevation
+    if t_min <= DAWN_START or t_min >= DAWN_END:
+        return 1.0
+    if t_min <= DAWN_PEAK:
+        frac = (t_min - DAWN_START) / (DAWN_PEAK - DAWN_START)
+    else:
+        frac = (DAWN_END - t_min) / (DAWN_END - DAWN_PEAK)
+    return 1.0 + DAWN_AMP * frac
+
+
 def hovorka_equations(
     t: int,
     x: StateVector | StateArray,
@@ -215,7 +235,7 @@ def hovorka_equations(
     # Hovorka glucose compartment terms
     R12  = (x1 * Q1) - (k12 * Q2)
     R2   = x2 * Q2
-    EGPc = EGP0 * BW * max(0.0, 1.0 - x3)
+    EGPc = EGP0 * BW * max(0.0, 1.0 - x3) * _dawn_egp_factor(float(t))
 
     # ETH exercise contributions grafted onto Q1:
     #   exercise_uptake — insulin-independent glucose disposal during exercise

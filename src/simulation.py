@@ -329,7 +329,7 @@ def run_simulation(
                 # Mimics real T1D day-to-day variability (sleep, minor illness, stress).
                 # Scales SI1/SI2/SI3 in patient_params so the ODE closure picks it up.
                 # ISF used in the correction guard is scaled inversely (ISF ∝ 1/SI).
-                si_day_factor = float(np.clip(rng.normal(1.0, 0.15), 0.65, 1.40))
+                si_day_factor = float(np.clip(rng.normal(1.0, 0.10), 0.78, 1.25))
                 patient_params["SI1"] = _base_SI1 * si_day_factor
                 patient_params["SI2"] = _base_SI2 * si_day_factor
                 patient_params["SI3"] = _base_SI3 * si_day_factor

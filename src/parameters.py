@@ -86,6 +86,10 @@ def _get_hovorka_base_params() -> ParameterSet:
         #   This halves the exercise_si=Z*x1*Q1 overnight drain for intense exercise days while
         #   preserving the anomaly glucose signature needed for ML labeling.
         "eth_Z_max":   0.2,       # [count·min] soft ceiling on Z accumulation (EXPERIMENTAL)
+        # Dawn phenomenon amplitude: fractional EGP0 elevation at peak (05:00).
+        # Reference patient uses population mean; individual values sampled in
+        # _sample_single_patient(). See _dawn_egp_factor() in model.py.
+        "dawn_amp":    0.12,      # [fraction] peak EGP0 elevation (12% = population mean)
     }
 
 
@@ -254,6 +258,13 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     p["eth_q3l"] = _sample_truncated_normal(rng, 5.79e-7, 1.83e-7, lower=1e-10)  # rGP aerobic drive
     p["eth_q4l"] = _sample_truncated_normal(rng, 0.0993,  0.0378,  lower=1e-4)   # rGP aerobic decay
     # Anaerobic params are fixed (EXPERIMENTAL) — not sampled per patient.
+
+    # Dawn phenomenon amplitude: truncated normal calibrated so ~30% of patients
+    # draw <5% (minimal responders) and ~15% hit the 0.22 cap (pronounced).
+    # Bounds [0.0, 0.22] anchored to Perriello et al. (1991): 20–25% peak EGP
+    # elevation in T1D; mean 0.12 reflects ~60–70% prevalence of clinically
+    # significant dawn phenomenon (Monnier et al. 2012; Carroll & Schade 2005).
+    p["dawn_amp"] = float(np.clip(rng.normal(0.12, 0.07), 0.0, 0.22))
 
     return p
 

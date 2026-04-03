@@ -117,24 +117,34 @@ def _get_input_values(
     )
 
 
-def _dawn_egp_factor(t_min: float) -> float:
+def _dawn_egp_factor(t_min: float, amp: float) -> float:
     """Circadian EGP0 scaling for the dawn phenomenon.
 
-    Hepatic glucose production rises ~25% at peak (06:00, 360 min) driven by
-    cortisol and GH surges, tapering linearly from 04:00 (240 min) to 08:00
-    (480 min).  Outside that window the factor is 1.0 (no modification).
+    Hepatic glucose production is elevated by GH pulses (onset ~01:00–03:00,
+    hepatic effect delayed ~2 h) and rising cortisol (peaks ~06:00–08:00).
+    The combined effect is modelled as a symmetric triangular ramp:
+      - Rising limb: 03:00 (180 min) → peak at 05:00 (300 min)
+      - Falling limb: 05:00 (300 min) → 07:00 (420 min)
+
+    Window chosen so the peak precedes the earliest breakfast (06:30) and the
+    tail overlaps only partially with the meal window — matching clinical
+    observation that the dawn rise is mainly a fasting phenomenon, with a
+    residual effect during early breakfast (Perriello et al. 1991; Carroll &
+    Schade 2005).
+
+    amp: per-patient amplitude (fraction, 0 = no dawn, 0.22 = 22% peak rise).
+         Sampled at patient-generation time; see parameters.py for distribution.
     """
-    DAWN_START = 240.0   # 04:00
-    DAWN_PEAK  = 360.0   # 06:00
-    DAWN_END   = 480.0   # 08:00
-    DAWN_AMP   = 0.25    # 25% peak EGP elevation
+    DAWN_START = 180.0   # 03:00
+    DAWN_PEAK  = 300.0   # 05:00
+    DAWN_END   = 420.0   # 07:00
     if t_min <= DAWN_START or t_min >= DAWN_END:
         return 1.0
     if t_min <= DAWN_PEAK:
         frac = (t_min - DAWN_START) / (DAWN_PEAK - DAWN_START)
     else:
         frac = (DAWN_END - t_min) / (DAWN_END - DAWN_PEAK)
-    return 1.0 + DAWN_AMP * frac
+    return 1.0 + amp * frac
 
 
 def hovorka_equations(
@@ -235,7 +245,7 @@ def hovorka_equations(
     # Hovorka glucose compartment terms
     R12  = (x1 * Q1) - (k12 * Q2)
     R2   = x2 * Q2
-    EGPc = EGP0 * BW * max(0.0, 1.0 - x3) * _dawn_egp_factor(float(t))
+    EGPc = EGP0 * BW * max(0.0, 1.0 - x3) * _dawn_egp_factor(float(t), float(params.get("dawn_amp", 0.12)))
 
     # ETH exercise contributions grafted onto Q1:
     #   exercise_uptake — insulin-independent glucose disposal during exercise

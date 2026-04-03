@@ -118,22 +118,17 @@ def _get_input_values(
 
 
 def _dawn_egp_factor(t_min: float, amp: float) -> float:
-    """Circadian EGP0 scaling for the dawn phenomenon.
+    """GH-driven EGP0 elevation — the hepatic component of the dawn phenomenon.
 
-    Hepatic glucose production is elevated by GH pulses (onset ~01:00–03:00,
-    hepatic effect delayed ~2 h) and rising cortisol (peaks ~06:00–08:00).
-    The combined effect is modelled as a symmetric triangular ramp:
-      - Rising limb: 03:00 (180 min) → peak at 05:00 (300 min)
-      - Falling limb: 05:00 (300 min) → 07:00 (420 min)
+    Growth hormone pulses at 01:00–03:00 during deep sleep; the downstream
+    hepatic effect is delayed ~2 h, producing elevated glycogenolysis and
+    gluconeogenesis from ~03:00 onward (Perriello et al. 1991).  This is the
+    EARLIER of the two dawn-hormone effects and is predominantly a FASTING
+    phenomenon (peaks before most patients eat).
 
-    Window chosen so the peak precedes the earliest breakfast (06:30) and the
-    tail overlaps only partially with the meal window — matching clinical
-    observation that the dawn rise is mainly a fasting phenomenon, with a
-    residual effect during early breakfast (Perriello et al. 1991; Carroll &
-    Schade 2005).
+    Does NOT model cortisol — see _cortisol_si_factor() for that component.
 
-    amp: per-patient amplitude (fraction, 0 = no dawn, 0.22 = 22% peak rise).
-         Sampled at patient-generation time; see parameters.py for distribution.
+    Window: 03:00–07:00, peak 05:00.  amp is per-patient (see parameters.py).
     """
     DAWN_START = 180.0   # 03:00
     DAWN_PEAK  = 300.0   # 05:00
@@ -145,6 +140,47 @@ def _dawn_egp_factor(t_min: float, amp: float) -> float:
     else:
         frac = (DAWN_END - t_min) / (DAWN_END - DAWN_PEAK)
     return 1.0 + amp * frac
+
+
+def _cortisol_si_factor(t_min: float, dawn_amp: float) -> float:
+    """Cortisol-driven morning insulin resistance — the peripheral SI component.
+
+    Cortisol follows a circadian rhythm peaking at ~08:00 (480 min).  Unlike
+    GH (which acts mainly on EGP), cortisol's primary glucose effect is
+    reduced peripheral insulin sensitivity: it inhibits GLUT4 translocation
+    and downstream insulin signalling, reducing SI1 (transport), SI2 (disposal)
+    and SI3 (EGP suppression) during the breakfast window.
+
+    This is the LATER of the two dawn-hormone effects and overlaps directly
+    with breakfast (06:30–08:00), explaining why morning meals are hardest to
+    manage in T1D (Carroll & Schade 2005; Boden et al. 1996).
+
+    Correlation with dawn_amp: both GH and cortisol are elevated in the same
+    hormonal axis; patients with a strong EGP dawn rise (high dawn_amp) also
+    show stronger cortisol-mediated morning resistance.
+
+    Magnitude: dawn_amp × 0.6 at peak.
+      mean dawn_amp=0.12 → ~7% SI reduction  (lower end of clinical range)
+      max  dawn_amp=0.22 → ~13% SI reduction (within published range)
+
+    The control stack (apply_guard_iob_isf) uses the calibrated ISF and is
+    unaware of this morning resistance — matching real T1D behaviour where
+    patients dose with their standard ISF but find corrections less effective
+    in the morning.
+
+    Window: 06:00–10:00, peak 08:00.
+    """
+    CORTISOL_START    = 360.0   # 06:00
+    CORTISOL_PEAK     = 480.0   # 08:00
+    CORTISOL_END      = 600.0   # 10:00
+    CORTISOL_SI_SCALE = 0.6     # coupling: fraction of dawn_amp applied as SI reduction
+    if t_min <= CORTISOL_START or t_min >= CORTISOL_END:
+        return 1.0
+    if t_min <= CORTISOL_PEAK:
+        frac = (t_min - CORTISOL_START) / (CORTISOL_PEAK - CORTISOL_START)
+    else:
+        frac = (CORTISOL_END - t_min) / (CORTISOL_END - CORTISOL_PEAK)
+    return max(0.5, 1.0 - dawn_amp * CORTISOL_SI_SCALE * frac)  # hard floor at 0.5
 
 
 def hovorka_equations(
@@ -216,9 +252,15 @@ def hovorka_equations(
     else:
         fr = 0.0
 
-    kb1 = SI1 * ka1
-    kb2 = SI2 * ka2
-    kb3 = SI3 * ka3
+    # Cortisol-driven morning SI reduction (06:00–10:00): scales kb so plasma
+    # insulin I drives x1/x2/x3 less effectively during the breakfast window.
+    # GH effect (EGP) is handled separately in EGPc below; these two effects
+    # share dawn_amp as a common per-patient parameter but act on different
+    # physiological pathways and different time windows.
+    _cortisol = _cortisol_si_factor(float(t), float(params.get("dawn_amp", 0.12)))
+    kb1 = SI1 * ka1 * _cortisol  # [min^-2/(mU/L)] insulin transport drive
+    kb2 = SI2 * ka2 * _cortisol  # [min^-2/(mU/L)] insulin disposal drive
+    kb3 = SI3 * ka3 * _cortisol  # [min^-1/(mU/L)]  insulin EGP-suppression drive
     dx1 = kb1 * I - ka1 * x1
     dx2 = kb2 * I - ka2 * x2
     dx3 = kb3 * I - ka3 * x3
@@ -245,6 +287,8 @@ def hovorka_equations(
     # Hovorka glucose compartment terms
     R12  = (x1 * Q1) - (k12 * Q2)
     R2   = x2 * Q2
+    # GH-driven EGP elevation (03:00–07:00): growth hormone raises hepatic glucose
+    # production before breakfast.  Cortisol's SI effect is applied to kb above.
     EGPc = EGP0 * BW * max(0.0, 1.0 - x3) * _dawn_egp_factor(float(t), float(params.get("dawn_amp", 0.12)))
 
     # ETH exercise contributions grafted onto Q1:

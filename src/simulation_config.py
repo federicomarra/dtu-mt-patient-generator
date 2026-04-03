@@ -24,7 +24,9 @@ class SimulationConfig:
     initial_target_glucose_mgdl: float = 100.0
     initial_glucose_acceptance_min_mmol: float = 4.5
     initial_glucose_acceptance_max_mmol: float = 7.2
-    instability_max_glucose_mmol: float = 30.53  # 550 mg/dL / 18.016
+    instability_max_glucose_mmol: float = 33.3   # 600 mg/dL / 18.016 — raised from 550 to reduce
+    # rejection from cortisol/dawn-driven single-day peaks while remaining within
+    # physiologically possible T1D range (DKA onset >600 mg/dL)
     instability_hyper_pct_threshold: float = 60.0
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
     # Exercise days (scenarios 2, 7, 8, 9) use the _exercise variants because physiological

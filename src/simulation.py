@@ -203,8 +203,8 @@ def run_simulation(
             basal_hourly_patient = (us_calibrated_mU_min * 60.0 / 1000.0) if config.use_calibrated_basal else config.basal_hourly
 
             # Compute ICR and ISF (sensitivity factors)
-            insulin_carbo_ratio_patient = find_icr(params=patient_params, initial_icr=config.init_insulin_carbo_ratio, print_progress=False)
-            insulin_sensitivity_patient = find_isf(params=patient_params, initial_isf=config.init_insulin_sensitivity_factor, print_progress=False)
+            insulin_carbo_ratio_patient = find_icr(params=patient_params, initial_icr=config.init_insulin_carbo_ratio, target_glycemia_mmol=config.calibration_target_glycemia_mmol, print_progress=False)
+            insulin_sensitivity_patient = find_isf(params=patient_params, initial_isf=config.init_insulin_sensitivity_factor, target_glycemia_mmol=config.calibration_target_glycemia_mmol, print_progress=False)
 
             # Store into patient params
             patient_params["ICR"] = insulin_carbo_ratio_patient

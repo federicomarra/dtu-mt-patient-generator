@@ -183,6 +183,7 @@ def run_simulation(
             vg_bw = float(patient_params["VG"]) * float(patient_params["BW"])
             initial_glucose_mmol = float(x0_initial[0]) / vg_bw if vg_bw > 0.0 else 0.0
             if not (rejection_bounds_mmol[0] <= initial_glucose_mmol <= rejection_bounds_mmol[1]):
+                print(f"  [DEBUG] INIT_GLUCOSE pid=candidate g0={initial_glucose_mmol:.2f} mmol/L bounds=[{rejection_bounds_mmol[0]},{rejection_bounds_mmol[1]}]")
                 rejected_patients += 1
                 rejected_initial_glucose += 1
                 continue
@@ -315,6 +316,10 @@ def run_simulation(
             # simulating all N days before checking.
             _early_reject_reason: str | None = None
             _running_max_glucose: float = 0.0
+            # Chronic-hypo counter (non-exercise days only): counts days that exceed the soft
+            # threshold (quality_max_hypo_pct_soft_threshold). Rejection fires when the count
+            # exceeds quality_max_hypo_bad_nonex_days — see simulation_config.py for rationale.
+            _hypo_bad_nonex_day_count: int = 0
 
             # Simulate each day
             for day_idx in range(config.n_days):
@@ -545,6 +550,7 @@ def run_simulation(
                     _day_max_glucose = float(np.max(physio_segment_mmol))
                     _running_max_glucose = max(_running_max_glucose, _day_max_glucose)
                     if _running_max_glucose > instability_max_glucose_mmol:
+                        print(f"  [DEBUG] INSTABILITY pid={sim_patient_id} day={_day_i} scen={scenario} max_glucose={_running_max_glucose:.1f} mmol/L")
                         _early_reject_reason = "instability"
                         break
 
@@ -568,13 +574,22 @@ def run_simulation(
                         + (config.quality_max_hypo_pct_spillover_bonus if _two_days_ago_was_exercise else 0.0)
                     )
                     if day_hypo_pct > _day_hypo_thresh:
-                        # print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                        print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
                         _early_reject_reason = "quality_hypo"
                         break
                     if day_min_glucose < config.quality_min_glucose_mmol:
-                        # print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                        print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
                         _early_reject_reason = "quality_hypo"
                         break
+                    # Tier-2 chronic-hypo check (non-exercise days only): accumulate bad days and
+                    # reject when the count exceeds the allowed maximum. Exercise hypo is expected
+                    # physiology and tracked separately via the exercise threshold above.
+                    if scenario not in _EXERCISE_SCENARIO_IDS and day_hypo_pct > config.quality_max_hypo_pct_soft_threshold:
+                        _hypo_bad_nonex_day_count += 1
+                        if _hypo_bad_nonex_day_count > config.quality_max_hypo_bad_nonex_days:
+                            print(f"  [DEBUG] CHRONIC_HYPO pid={sim_patient_id} bad_nonex_days={_hypo_bad_nonex_day_count} on day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}%")
+                            _early_reject_reason = "quality_hypo"
+                            break
                     if day_hyper_pct > quality_max_hyper_pct:
                         _early_reject_reason = "quality_hyper"
                         break
@@ -632,6 +647,7 @@ def run_simulation(
             _quality_hypo_fail  = False
             _quality_hyper_fail = False
             _quality_floor_fail = False
+            _postloop_bad_nonex_days: int = 0
             for _day_i, (_scen_id, _day_hypo, _day_hyper, _day_min) in enumerate(per_day_quality):
                 _prev_was_exercise = (
                     _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
@@ -651,12 +667,19 @@ def run_simulation(
                 )
                 if _day_hypo > _day_hypo_thresh:
                     _quality_hypo_fail = True
-                    # print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                    print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                # Tier-2 chronic-hypo check (non-exercise days only, mirrors fail-fast block)
+                if _scen_id not in _EXERCISE_SCENARIO_IDS and _day_hypo > config.quality_max_hypo_pct_soft_threshold:
+                    _postloop_bad_nonex_days += 1
                 if _day_hyper > quality_max_hyper_pct:
                     _quality_hyper_fail = True
                 if _day_min < config.quality_min_glucose_mmol:
                     _quality_floor_fail = True
-                    # print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                    print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+            # Tier-2: reject if chronic non-exercise hypo pattern persists across the simulation
+            if _postloop_bad_nonex_days > config.quality_max_hypo_bad_nonex_days:
+                _quality_hypo_fail = True
+                print(f"  [DEBUG] CHRONIC_HYPO(post) pid={sim_patient_id} bad_nonex_days={_postloop_bad_nonex_days}")
             if _quality_floor_fail or _quality_hypo_fail:
                 rejected_patients += 1
                 rejected_quality_hypo += 1

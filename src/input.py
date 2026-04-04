@@ -5,25 +5,45 @@ from typing import TypedDict, Optional, Tuple
 
 N_SCENARIOS: int = 9
 
-# Sampling weights for scenarios 1-9.
-# Scenarios 1-3 (normal, active, sedentary) — common day-to-day patterns.
-# Scenarios 4-6 (restaurant meal, missed bolus, late bolus) — meal anomalies, rarer.
-# Scenarios 7-9 (prolonged aerobic, anaerobic, exercise + missed bolus) — rare exercise anomalies.
+# Sampling weights for scenarios 1-9 (sum = 1.00 exactly, no renormalization needed).
+# sc1-3 baseline days: 60% combined. sc4-6 meal anomaly days: 26%. sc7-9 exercise anomaly: 14%.
 #
-# Target: ~3:1 normal-to-anomaly ratio. Scenarios 7-9 are intentionally rarer
-# than 4-6 to reflect real-world prevalence of prolonged/anaerobic exercise days.
+# ── Anomaly rate derivations (5 meals/day, 14-day horizon per patient) ────────
 #
-# Scenario 2 (active) is deliberately lower than 1 and 3 (18% vs 25/27%) because:
-#   - Each exercise day causes Z-state spillover into the next day (~10h tau_Z), effectively
-#     making two consecutive days exercise-affected; reducing frequency limits this coupling.
-#   - Real-world adherence to structured afternoon exercise in T1D adults is ~3 sessions/week
-#     (~43%), but scenario 2 represents a specific afternoon workout, not incidental activity.
+# Missed bolus (sc5 pure + sc9 exercise+missed):
+#   missed_meal_id sampled uniformly from {1..5} → 60% hit a main meal (3/5).
+#   sc5=7%, sc9=5% → combined 12%; main-meal rate = 12%×0.6 ≈ 7.2% of main-meal
+#   occasions. Anchored to Ziegler 2013 (pump registry ~6%) and Lawton 2011
+#   (T1D self-report ~7–8%). Per patient: 14×12% ≈ 1.7 missed-bolus days.
 #
-# ML NOTE — scenario 4 (restaurant meal) combines a larger carb load with systematic
-# bolus underestimation and extended absorption, applied to either lunch or dinner (50/50).
-# This gives a strong post-prandial glucose excursion and is a clean ML target.
+# Extreme late bolus (sc6): k∈{1,2} main meals affected per day, average 1.5.
+#   sc6=7%; effective main-meal rate = 7%×1.5 ≈ 10.5% of main-meal occasions with
+#   extreme delay (30–90 min). Normal post-meal timing (≤20 min) is already covered
+#   by the per-meal bolus-lead distribution (15% post-meal probability). Combined
+#   ~25% of main-meal occasions with suboptimal timing — consistent with Bode 2002
+#   and JDST 2018 bolus-timing audit data.
+#
+# Restaurant/large meal (sc4=12%): 14×12% ≈ 1.7 restaurant days per patient,
+#   applied to lunch or dinner only (50/50). Brazeau 2013 (Can J Diabetes): T1D
+#   adults eat out ~1–2×/week; 12% targets the lower bound for an active cohort.
+#   sc4 still samples a bolus lead time from the pre/at/post distribution independently
+#   of the restaurant carb modification (no special case in lead sampling).
+#
+# Exercise days (sc2+7+8+9 = 16+4+5+5 = 30%): 14×30% ≈ 4.2 exercise days per
+#   patient ≈ 2 sessions/week. Slightly below ~3×/week observed in active T1D adults
+#   (43%; Riddell 2017) to limit multi-day Z-state accumulation from tau_Z≈600 min.
+#   sc8 (anaerobic/resistance, 5%) > sc7 (prolonged aerobic, 4%): gym-type training
+#   is more evenly distributed across the 18–65 age range than sustained running,
+#   which declines sharply after ~50 (Bauman 2012 leisure activity survey).
+#   sc2 (active afternoon) = 16%: largest single exercise share; deliberate Z-state
+#   guard — reducing below real-world prevalence limits compounding SI elevation.
+#
+# sc1 (normal, 23%) > sc3 (sedentary, 21%): slightly more typical-activity days than
+#   fully sedentary; both represent the dominant daily baseline for working adults.
+#   sc1+sc3 = 44% of all simulated days.
+#
 # Scenario 8 (anaerobic) uses EXPERIMENTAL parameters — see hovorka_exercise.py.
-_SCENARIO_WEIGHTS_RAW: list[float] = [0.22, 0.18, 0.17, 0.08, 0.10, 0.12, 0.04, 0.04, 0.05]
+_SCENARIO_WEIGHTS_RAW: list[float] = [0.23, 0.16, 0.21, 0.12, 0.07, 0.07, 0.04, 0.05, 0.05]
 SCENARIO_WEIGHTS: list[float] = [
     w / sum(_SCENARIO_WEIGHTS_RAW) for w in _SCENARIO_WEIGHTS_RAW
 ]

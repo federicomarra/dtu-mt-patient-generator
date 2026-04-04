@@ -109,7 +109,7 @@ def find_insulin_carbo_ratio(
     target_glycemia_mmol: float = 5.5,
     measurement_time_min: int = 180,
     initial_glucose_mmol: float = 5.5,
-    tolerance_mmol: float = 0.3,
+    tolerance_mmol: float = 0.6,  # loosened from 0.3: real patients use round-number ICRs, not ±0.3 mmol/L precision
     max_iterations: int = 40,
     print_progress: bool = False,
 ) -> dict[str, float]:
@@ -213,7 +213,7 @@ def find_insulin_sensitivity_factor(
     initial_glucose_mmol: float = 13.0,
     target_glycemia_mmol: float = 5.5,
     measurement_time_min: int = 180,
-    tolerance_mmol: float = 0.3,
+    tolerance_mmol: float = 0.6,  # loosened from 0.3: real ISF estimates carry ±1-2 mmol/L/U uncertainty
     max_iterations: int = 40,
     print_progress: bool = False,
 ) -> dict[str, float]:

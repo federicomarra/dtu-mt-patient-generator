@@ -96,7 +96,14 @@ def compute_eth_exercise_terms(
     Y_s      = max(0.0, Y)
     Z_s      = max(0.0, Z)
     rGU_s    = max(0.0, rGU)
-    rGP_s    = max(0.0, rGP)
+    # rGP_s is capped at 0.025 to prevent multiplicative Q1 runaway during anaerobic exercise.
+    # Physiological ceiling: hepatic anaerobic glycogenolysis raises EGP by at most 2-3× above
+    # basal (~1.3 mmol/min), so the additional production term rGP*Q1 ≤ 0.025×84mmol ≈ 2.1 mmol/min.
+    # Without this cap, q3h (2.6× aerobic q3l) drives rGP to ~0.149 at AC=9000, producing a
+    # positive feedback loop (exercise_prod = rGP*Q1 grows with Q1) that results in explosive
+    # glucose values (38–253 mmol/L). The aerobic case is unaffected: aerobic rGP peaks at ~0.013,
+    # well below the cap. See hovorka_exercise.py analysis in simulation diagnostics.
+    rGP_s    = min(max(0.0, rGP), 0.025)
     tPA_s    = max(0.0, tPA)
     PAint_s  = max(0.0, PAint)
     rdepl_s  = max(0.0, rdepl)
@@ -178,13 +185,23 @@ def compute_eth_exercise_terms(
     # --- Q1 interaction terms (grafted onto Hovorka dQ1) ---
 
     # exercise_uptake: insulin-independent glucose uptake during exercise [mmol/min]
-    # Equivalent to Rashid's QE21 term but driven by rGU instead of E2²·x1
-    exercise_uptake = rGU_s * Q1_s
+    # Equivalent to Rashid's QE21 term but driven by rGU instead of E2²·x1.
+    # Hard cap at 2.0 mmol/min: rGU_s * Q1_s is multiplicative in Q1, so a hyperglycaemic
+    # patient with Q1 >> steady-state (~84 mmol) would otherwise produce runaway uptake that
+    # crashes glucose to the floor despite L1/L2 rescue. 2.0 mmol/min is the physiological
+    # ceiling for insulin-independent exercise glucose uptake above basal in T1D adults
+    # (tighter than the exercise_prod cap of 3.0 because uptake is always a glucose sink).
+    exercise_uptake = min(rGU_s * Q1_s, 2.0)
 
     # exercise_prod: net exercise EGP contribution [mmol/min]
     # rGP increases endogenous production during exercise; rdepl progressively
-    # limits it as glycogen depletes (prolonged exercise → late hypoglycemia)
-    exercise_prod = max(0.0, rGP_s - rdepl_s) * Q1_s
+    # limits it as glycogen depletes (prolonged exercise → late hypoglycemia).
+    # Hard cap at 3.0 mmol/min: the rate coefficient rGP_s is already capped at 0.025,
+    # but the product rGP_s * Q1_s remains multiplicative in Q1. A hyperglycaemic patient
+    # (Q1 >> steady-state ~84 mmol) would still produce explosive values — e.g. at Q1=200
+    # the uncapped product reaches 0.025 × 200 = 5 mmol/min. The 3.0 mmol/min ceiling is
+    # ~2.3× basal EGP and represents the physiological maximum anaerobic glycogenolysis rate.
+    exercise_prod = min(max(0.0, rGP_s - rdepl_s) * Q1_s, 3.0)
 
     # exercise_si: post-exercise insulin sensitivity boost [mmol/min]
     # Z amplifies the x1 insulin action on Q1 for up to ~10h after exercise

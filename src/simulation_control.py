@@ -21,6 +21,9 @@ class ControllerState:
     guard_next_trigger_min: int = 0
     rescue_next_trigger_min: int = 0
 
+    rescue_l2_active_until_min: int = -1   # L2 (<3.0 mmol/L) independent cooldown
+    rescue_l2_next_trigger_min: int = 0
+
     correction_isf_active_until_min: int = -1
     correction_isf_next_trigger_min: int = 0
     correction_isf_rate_mU_min: float = 0.0
@@ -114,10 +117,23 @@ def apply_hypo_rescue_to_derivative(
     config: SimulationConfig,
     state: ControllerState,
 ) -> None:
-    """Mutate ODE derivative with gut-delivered rescue carbs when rescue is active."""
+    """Mutate ODE derivative with gut-delivered rescue carbs when rescue is active.
+
+    Two-tier rescue (ADA/Battelino 2019):
+      L1 (≤ hypo_rescue_trigger_mmol, default 3.9): 15 g fast carbs, 45-min cooldown.
+          Fires simultaneously with the hypo guard basal suspend.
+      L2 (≤ hypo_rescue_l2_trigger_mmol, default 3.0): 30 g carbs, 60-min cooldown.
+          Independent cooldown — L2 can fire even while L1 cooldown is active, because
+          at <3.0 mmol/L waiting is not acceptable.
+    Both tiers can be active simultaneously; their carb rates are summed.
+    """
+    ag  = float(patient_params["Ag"])
+    mwg = float(patient_params["MwG"])
+
+    # --- L1 rescue ---
     if (
         config.enable_hypo_rescue
-        and g_est < config.hypo_rescue_trigger_mmol
+        and g_est <= config.hypo_rescue_trigger_mmol
         and current_abs_min > state.rescue_active_until_min
         and current_abs_min >= state.rescue_next_trigger_min
     ):
@@ -127,12 +143,24 @@ def apply_hypo_rescue_to_derivative(
         )
 
     if current_abs_min <= state.rescue_active_until_min:
-        rescue_rate_mg_min = max(0.0, config.hypo_rescue_carbs_g) * 1000.0 / max(
-            1, config.hypo_rescue_duration_min
+        l1_rate_mg_min = max(0.0, config.hypo_rescue_carbs_g) * 1000.0 / max(1, config.hypo_rescue_duration_min)
+        dy[8] += ag * (l1_rate_mg_min / mwg)
+
+    # --- L2 rescue (independent cooldown) ---
+    if (
+        config.enable_hypo_rescue_l2
+        and g_est <= config.hypo_rescue_l2_trigger_mmol
+        and current_abs_min > state.rescue_l2_active_until_min
+        and current_abs_min >= state.rescue_l2_next_trigger_min
+    ):
+        state.rescue_l2_active_until_min = current_abs_min + max(1, config.hypo_rescue_l2_duration_min) - 1
+        state.rescue_l2_next_trigger_min = state.rescue_l2_active_until_min + max(
+            0, config.hypo_rescue_l2_retrigger_cooldown_min
         )
-        ag = float(patient_params["Ag"])
-        mwg = float(patient_params["MwG"])
-        dy[8] += ag * (rescue_rate_mg_min / mwg)
+
+    if current_abs_min <= state.rescue_l2_active_until_min:
+        l2_rate_mg_min = max(0.0, config.hypo_rescue_l2_carbs_g) * 1000.0 / max(1, config.hypo_rescue_l2_duration_min)
+        dy[8] += ag * (l2_rate_mg_min / mwg)
 
 
 def count_correction_active_points(

@@ -112,11 +112,11 @@ class SimulationConfig:
     # Target glucose for ICR/ISF bisection calibration [mmol/L].
     # At 5.5 mmol/L (euglycaemia), ICR/ISF are tuned to return glucose to near-normal after
     # every meal/correction — producing overly well-controlled virtual patients (TIR ~89%,
-    # hyper ~7%). Raising to 7.5 mmol/L calibrates ICR to deliver less insulin per gram of
+    # hyper ~7%). Raising to 6.5 mmol/L calibrates ICR to deliver less insulin per gram of
     # carbs (stopping at a higher post-meal plateau) and ISF to correct less aggressively,
     # producing sustained post-meal excursions above 10 mmol/L consistent with HbA1c ~7.5–8%
     # and real-world T1D moderate control (T1D Exchange 2016 median HbA1c 8.4%).
-    calibration_target_glycemia_mmol: float = 7.5
+    calibration_target_glycemia_mmol: float = 6.5
 
     enable_iob_bolus_guard: bool = True
     iob_guard_units: float = 4.0

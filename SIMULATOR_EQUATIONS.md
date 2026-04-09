@@ -455,22 +455,21 @@ Exercise intensity is represented directly as accelerometer counts $AC(t)$, the 
 
 | Scenario | Type | Duration | AC range |
 | --- | --- | --- | --- |
-| 2 — active | moderate aerobic | 30–75 min | 1200–2000 |
-| 7 — prolonged aerobic | long aerobic | **80–90 min** | 1500–2500 |
-| 8 — anaerobic (EXPERIMENTAL) | resistance/HIIT | 30–60 min | 6000–9000 |
-| 9 — exercise + missed bolus | moderate aerobic | 30–75 min | 1000–1800 |
+| SC2 — active aerobic (base) | moderate continuous aerobic | 30–60 min | 1200–2000 |
+| SC7 — prolonged aerobic (overlay) | long continuous aerobic | **75–120 min** | 1500–2500 |
+| SC8 — anaerobic (overlay, EXPERIMENTAL) | resistance/HIIT intervals | 20–50 min | 6000–9000 |
 
 Reference thresholds: $a_{AC}=1000$ counts → $f_{AC}=0.5$ (aerobic onset); $a_h=5600$ counts → $f_{HI}=0.5$ (anaerobic onset).
 
-**ML distinguishability note:** The AC ranges for scenarios 2, 7, and 9 all fall in the aerobic band. Because $n_2=100$ (very steep Hill coefficient), $f_{AC}$ saturates to $\approx 1$ for any $AC \gtrsim 1100$ — the ETH model is functionally identical for $AC=1500$ and $AC=2000$, so AC range differences between these scenarios do not produce distinguishable glucose signatures. The primary differentiator between scenario 2 and scenario 7 is **duration**: scenario 7 is guaranteed to be $\ge 80$ min (above the scenario 2 maximum of 75 min), ensuring that every scenario 7 session always produces greater $Z$, $rGU$, and $rGP$ accumulation than any scenario 2 session. Scenario 8 is cleanly separated in both duration and AC (above $a_h=5600$ anaerobic threshold).
+**ML distinguishability note:** The AC ranges for SC2 and the prolonged-aerobic overlay (SC7) all fall in the aerobic band. Because $n_2=100$ (very steep Hill coefficient), $f_{AC}$ saturates to $\approx 1$ for any $AC \gtrsim 1100$ — the ETH model is functionally identical for $AC=1500$ and $AC=2000$, so AC range differences between these scenarios do not produce distinguishable glucose signatures. The primary differentiator between SC2 and the prolonged-aerobic overlay is **duration**: the prolonged overlay is guaranteed to be $\ge 75$ min (above the SC2 maximum of 60 min), ensuring that every prolonged session always produces greater $Z$, $rGU$, and $rGP$ accumulation than any SC2 session. The anaerobic overlay (SC8) is cleanly separated in both duration and AC (above $a_h=5600$ anaerobic threshold).
 
 Total AC at minute $t$:
 
 $$
-AC(t) = AC_{baseline}(t,\text{scenario}) + AC_{session}(t,\text{schedule})
+AC(t) = AC_{baseline}(t,\text{base\_scenario}) + AC_{session}(t,\text{schedule})
 $$
 
-where $AC_{baseline}$ models incidental movement synchronized with meal windows (typically 75–500 counts for normal/active, 75–200 for sedentary, 0 for meal-perturbation scenarios 4–6), and $AC_{session}$ is the planned exercise session intensity (including burst modulation for scenario 8).
+where $AC_{baseline}$ models incidental movement synchronized with meal windows (typically 75–500 counts for SC1/SC2, 75–200 for SC3, 0 for days with meal-perturbation overlays but no exercise), and $AC_{session}$ is the planned exercise session intensity (including burst modulation for the anaerobic overlay).
 
 Anaerobic burst pattern (scenario 8): 2 min on / 3 min rest cycle, $AC_{burst} = 1.5 \times AC_{session}$.
 
@@ -614,7 +613,9 @@ $$
 U_{basal,eff}^{(U/hr)} \leftarrow U_{basal,eff}^{(U/hr)} + rate_{corr,mU/min}\cdot\frac{60}{1000}
 $$
 
-Default values: $G_{target}^{corr}=6.5$ mmol/L, $IOB_{free}=0.5$ U, $U_{max}=2$ U, $U_{min}=0.05$ U, $T_{corr}=5$ min, cooldown=60 min. All values are config-driven from `SimulationConfig`.
+Default values: $G_{target}^{corr}=10.5$ mmol/L ($\approx$189 mg/dL), $IOB_{free}=0.5$ U, $U_{max}=2$ U, $U_{min}=0.05$ U, $T_{corr}=5$ min, cooldown=90 min, check interval=5 min. All values are config-driven from `SimulationConfig`.
+
+> **Design note:** The target of 10.5 mmol/L (not near-euglycaemia) is intentional. Setting $G_{target}^{corr}$ low (e.g. 6.5 mmol/L) produces correction boluses after every meal, collapsing the post-prandial excursion and generating a cohort with unrealistically high TIR ($\sim$89%). At 10.5 mmol/L the correction only fires during sustained post-meal plateaus, capping the duration of excursions >10.5 mmol/L while allowing the natural glucose rise-and-fall shape needed for realistic anomaly signatures. Combined with the IOB guard, this avoids double-dosing on top of active meal boluses.
 
 ## 9.4 Hypo rescue carbs
 
@@ -679,41 +680,50 @@ Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated
 
 **Stage 3 — Quality (evaluated per recorded day independently):**
 
-Each day $d$ with scenario $s_d$ gets a base hypo threshold, then a spillover bonus $\delta_{spillover}$ is added once per exercise day found in the **2-day lookback window** $\{d-2,\, d-1\}$:
+Each day $d$ is classified as an exercise day if it has the SC2 base scenario or an exercise overlay (prolonged aerobic or anaerobic). A spillover bonus $\delta_{spillover}$ is added for each exercise day found in the **2-day lookback window** $\{d-2,\, d-1\}$:
 
 $$
 \theta_{hypo,base}(d) =
 \begin{cases}
-\theta_{hypo,exercise} & \text{if } s_d \in \{2,7,8,9\} \\
+\theta_{hypo,exercise} & \text{if day } d \text{ has exercise (SC2 base or exercise overlay)} \\
 \theta_{hypo,quality}  & \text{otherwise}
 \end{cases}
 $$
 
 $$
 \theta_{hypo}(d) = \theta_{hypo,base}(d)
-  + \delta_{spillover} \cdot \mathbf{1}[s_{d-1} \in \{2,7,8,9\}]
-  + \delta_{spillover} \cdot \mathbf{1}[s_{d-2} \in \{2,7,8,9\}]
+  + \delta_{spillover} \cdot \mathbf{1}[\text{day } d{-}1 \text{ had exercise}]
+  + \delta_{spillover} \cdot \mathbf{1}[\text{day } d{-}2 \text{ had exercise}]
 $$
 
-The $Z$-state (post-exercise insulin sensitivity, $\tau_Z \approx 600$ min) retains $\approx 40\%$ of its peak after one overnight interval and $\approx 9\%$ after two days. Consecutive exercise days compound this: each exercise day pre-loads $Z$ to a higher baseline for the next, so each prior exercise day in the 2-day window contributes an independent elevation of hypo risk. Scenarios 8 (anaerobic/HIIT, $AC \approx 6000$–$9000$) drive $Z$ to an even higher peak than aerobic scenarios (higher $Y$ due to higher $AC$) and therefore benefit most from the 2-day lookback.
+The $Z$-state (post-exercise insulin sensitivity, $\tau_Z \approx 600$ min) retains $\approx 40\%$ of its peak after one overnight interval and $\approx 9\%$ after two days. Consecutive exercise days compound this: each exercise day pre-loads $Z$ to a higher baseline for the next, so each prior exercise day in the 2-day window contributes an independent elevation of hypo risk. The anaerobic overlay ($AC \approx 6000$–$9000$) drives $Z$ to an even higher peak than aerobic sessions (higher $Y$ due to higher $AC$) and therefore benefits most from the 2-day lookback.
 
 | Day $d-2$ | Day $d-1$ | Day $d$ | Effective $\theta_{hypo}(d)$ |
 | --- | --- | --- | --- |
-| non-exercise | non-exercise | non-exercise | $10\%$ |
-| non-exercise | exercise | non-exercise | $10\% + 2\% = 12\%$ |
-| exercise | non-exercise | non-exercise | $10\% + 2\% = 12\%$ |
-| exercise | exercise | non-exercise | $10\% + 2\% + 2\% = 14\%$ |
-| non-exercise | non-exercise | exercise | $15\%$ |
-| non-exercise | exercise | exercise | $15\% + 2\% = 17\%$ |
-| exercise | exercise | exercise | $15\% + 2\% + 2\% = 19\%$ |
+| non-exercise | non-exercise | non-exercise | $15\%$ |
+| non-exercise | exercise | non-exercise | $15\% + 2\% = 17\%$ |
+| exercise | non-exercise | non-exercise | $15\% + 2\% = 17\%$ |
+| exercise | exercise | non-exercise | $15\% + 2\% + 2\% = 19\%$ |
+| non-exercise | non-exercise | exercise | $17\%$ |
+| non-exercise | exercise | exercise | $17\% + 2\% = 19\%$ |
+| exercise | exercise | exercise | $17\% + 2\% + 2\% = 21\%$ |
 
 $$
 \%Hyper_d \le \theta_{hyper,quality} \quad \forall\, d
 $$
 
-Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 76% hyper per day (which passes Stage 2 globally at 76% > 60% would still be caught there, but lower consistent values pass Stage 2) is rejected here because each day individually exceeds $\theta_{hyper,quality}=75\%$.
+Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 71% hyper per day (which passes Stage 2 globally at 71% > 60% would still be caught there, but lower consistent values pass Stage 2) is rejected here because each day individually exceeds $\theta_{hyper,quality}=70\%$.
 
 The distinction between Stage 2 and Stage 3 hyper thresholds (60% vs 75%) is intentional: Stage 2 catches explosive global instability across the full horizon; Stage 3 enforces per-day clinical quality — a single catastrophic day cannot be diluted by good days.
+
+**Two-tier hypo check (non-exercise days only):**
+
+Non-exercise days have a two-tier hypoglycaemia check:
+
+- **Tier 1 (hard cap):** if any non-exercise day exceeds $\theta_{hypo,quality}=15\%$, the patient is rejected immediately.
+- **Tier 2 (chronic pattern):** if a non-exercise day exceeds $\theta_{hypo,soft}=10\%$, a bad-day counter increments. If the counter exceeds $N_{bad}=2$ days, the patient is rejected. This catches patients with a persistent mild hypo pattern that individually stays below the hard cap but signals structural overinsulinisation.
+
+Exercise days use only the single $\theta_{hypo,exercise}=17\%$ threshold (no soft tier), because exercise-induced hypoglycaemia is expected physiology rather than a structural model defect.
 
 **Hard glucose floor (any day, any scenario):**
 
@@ -729,7 +739,7 @@ Stage 3 checks (hypo%, hyper%, $G_{floor}$) and the $G_{max,instability}$ hard c
 
 The $\%Hyper_{instability}$ check from Stage 2 is **not** fail-fast — it is a trajectory-wide average evaluated after all days complete. A single hyperglycaemic day can average out over N days and would be wrongly rejected early if checked incrementally.
 
-Default values: $\theta_{hypo,quality}=10\%$, $\theta_{hypo,exercise}=15\%$, $\delta_{spillover}=2\%$ (applied per exercise day in the 2-day lookback), $\theta_{hyper,quality}=75\%$, $\theta_{hyper,instability}=60\%$, $G_{max,instability}=30.53$ mmol/L (550 mg/dL), $G_{floor}=1.78$ mmol/L (32 mg/dL). All thresholds are config-driven from `SimulationConfig`.
+Default values: $\theta_{hypo,quality}=15\%$ (hard cap per non-exercise day), $\theta_{hypo,soft}=10\%$ (soft cap: reject if $>2$ non-exercise days exceed this), $\theta_{hypo,exercise}=17\%$, $\delta_{spillover}=2\%$ (applied per exercise day in the 2-day lookback), $\theta_{hyper,quality}=70\%$, $\theta_{hyper,instability}=60\%$, $G_{max,instability}=33.3$ mmol/L (600 mg/dL), $G_{floor}=2.0$ mmol/L (36 mg/dL). All thresholds are config-driven from `SimulationConfig`.
 
 **Design note — floor applied to physiological glucose only, not to the CGM signal:**
 
@@ -782,11 +792,11 @@ Aerobic parameters are validated on 5 T1D children from the Basel University Chi
 | --- | --- | --- | --- | --- |
 | `eth_tau_AC` | 5.0 | min | Fixed | AC → Y time constant; consistent across all patient files |
 | `eth_tau_Z` | 600.0 | min | Fixed | Post-exercise SI decay (~10h); consistent across patients |
-| `eth_b` | 3.0×10⁻⁶ | 1/(count·min) | N(3e-6, 1e-6²) | Z drive; mean of patients 1–5 and T1D-V1 |
-| `eth_q1` | 1.0×10⁻⁶ | 1/(count·min²) | N(1e-6, 8e-7²) | rGU drive; mean of T1D patients |
-| `eth_q2` | 0.10 | 1/min | N(0.10, 0.08²) | rGU decay; mean of T1D patients |
-| `eth_q3l` | 3.0×10⁻⁷ | — | N(3e-7, 1.5e-7²) | rGP aerobic drive; mean of T1D patients |
-| `eth_q4l` | 0.060 | 1/min | N(0.060, 0.018²) | rGP aerobic decay; mean of T1D patients |
+| `eth_b` | 3.64×10⁻⁶ | 1/(count·min) | N(3.64e-6, 1.05e-6²) | Z drive; fitted to T1D children cohort |
+| `eth_q1` | 6.46×10⁻⁷ | 1/(count·min²) | N(7.33e-7, 1.60e-7²) | rGU drive; fitted to T1D children cohort |
+| `eth_q2` | 0.0617 | 1/min | N(0.0707, 0.0219²) | rGU decay; fitted to T1D children cohort |
+| `eth_q3l` | 4.46×10⁻⁷ | — | N(5.79e-7, 1.83e-7²) | rGP aerobic drive; fitted to T1D children cohort |
+| `eth_q4l` | 0.0705 | 1/min | N(0.0993, 0.0378²) | rGP aerobic decay; fitted to T1D children cohort |
 | `eth_adepl` | 0.0108 | min/count | Fixed | Depletion threshold slope; fixed across patients |
 | `eth_bdepl` | 180.6 | count·min | Fixed | Depletion threshold intercept; fixed across patients |
 | `eth_aY` | 1500.0 | count·min | Fixed | fY half-saturation; fixed across patients |
@@ -803,7 +813,52 @@ Aerobic parameters are validated on 5 T1D children from the Basel University Chi
 
 **Note on eth_n1/n2:** The very large Hill coefficients (20, 100) make the sigmoidal transfer functions behave as near-binary switches. This is intentional in the ETH formulation: $f_{AC}$ switches sharply at $a_{AC}=1000$ counts to mark the onset of activity, and $f_{HI}$ switches sharply at $a_h=5600$ counts to mark the anaerobic transition.
 
-**Note on eth_q6=0:** In the T1D-validated aerobic parameter files, $q_6=0$, meaning glycogen depletion ($rdepl$) is inactive and $\dot{rdepl}=0$ always. This is consistent with the observation that moderate aerobic exercise in T1D children does not produce significant glycogen depletion within typical session durations. The EXPERIMENTAL anaerobic path uses a non-zero $q_6$ for prolonged/intense sessions (scenario 7/8), but this pathway is not yet clinically validated.
+**Note on eth_q6=0:** In the T1D-validated aerobic parameter files, $q_6=0$, meaning glycogen depletion ($rdepl$) is inactive and $\dot{rdepl}=0$ always. This is consistent with the observation that moderate aerobic exercise in T1D children does not produce significant glycogen depletion within typical session durations. The EXPERIMENTAL anaerobic path uses a non-zero $q_6$ for prolonged/intense sessions, but this pathway is not yet clinically validated.
+
+### 12.3 Dawn phenomenon and cortisol morning resistance
+
+Two circadian modulations are applied on top of the baseline Hovorka model. Both share the per-patient scalar `dawn_amp` ~ N(0.12, 0.07²) clipped [0, 0.22].
+
+**GH-driven EGP elevation (dawn phenomenon, hepatic component):**
+
+Growth hormone pulses at 01:00–03:00; the downstream hepatic effect is delayed ~2 h, producing elevated glycogenolysis and gluconeogenesis from 03:00 onward (Perriello et al. 1988). Modelled as a triangular multiplicative factor on $EGP_c$:
+
+$$
+f_{dawn}(t) = 1 + \text{dawn\_amp} \cdot
+\begin{cases}
+\dfrac{t - 180}{300 - 180} & 180 \le t \le 300 \\[6pt]
+\dfrac{420 - t}{420 - 300} & 300 < t < 420 \\[6pt]
+0                           & \text{otherwise}
+\end{cases}
+$$
+
+Window: 03:00–07:00, peak at 05:00. Applied to $\dot Q_1$ via $EGP_c \leftarrow EGP_c \cdot f_{dawn}(t)$.
+
+**Cortisol-driven SI reduction (peripheral component):**
+
+Cortisol peaks at ~08:00 and reduces peripheral insulin sensitivity by inhibiting GLUT4 translocation and downstream insulin signalling. Modelled as a triangular multiplicative factor on all three $k_b$ rates ($k_{b1},k_{b2},k_{b3}$):
+
+$$
+f_{cortisol}(t) = \max\!\left(0.5,\; 1 - \text{dawn\_amp} \times 0.6 \times
+\begin{cases}
+\dfrac{t - 360}{480 - 360} & 360 \le t \le 480 \\[6pt]
+\dfrac{600 - t}{600 - 480} & 480 < t < 600 \\[6pt]
+0                           & \text{otherwise}
+\end{cases}
+\right)
+$$
+
+Window: 06:00–10:00, peak at 08:00. Coupling factor 0.6 means that at mean `dawn_amp`=0.12 the SI reduction at peak is $\approx 7\%$; at max 0.22 it is $\approx 13\%$ — within the published clinical range (Carroll & Schade 2005; Boden et al. 1996). Hard floor of 0.5 prevents unphysiological SI collapse.
+
+The two effects are independent: $f_{dawn}$ acts on hepatic EGP; $f_{cortisol}$ acts on all three insulin action channels. Their temporal overlap (05:00–07:00) produces the characteristic fasting glucose rise before breakfast.
+
+| Parameter | Value | Notes |
+| --- | --- | --- |
+| `dawn_amp` | N(0.12, 0.07²) clipped [0, 0.22] | Per-patient; shared scalar for both GH and cortisol effects |
+| Dawn window | 03:00–07:00, peak 05:00 | Hepatic EGP scaling |
+| Cortisol window | 06:00–10:00, peak 08:00 | SI scaling |
+| Cortisol coupling | 0.6 | Fraction of dawn_amp applied as SI reduction |
+| Cortisol SI floor | 0.5 | Hard lower bound on $f_{cortisol}$ |
 
 ## 13) Additional Utility Equations
 

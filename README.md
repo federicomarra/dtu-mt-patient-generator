@@ -14,9 +14,9 @@ The project is designed for:
 - Hovorka glucose-insulin ODE simulation with minute-level inputs
 - ETH Deichmann exercise extension: 8 AC-driven states (`Y`, `Z`, `rGU`, `rGP`, `tPA`, `PAint`, `rdepl`, `th`) with glycogen depletion and post-exercise insulin sensitivity decay
 - Monte Carlo patient generation from physiological distributions
-- 9 deterministic daily scenarios with per-day jitter: 3 baseline + 3 meal anomalies + 3 exercise anomalies
-- Ground-truth ML labels exported per day (`scenario_id`, `missed_meal_id`, `late_bolus_id`)
-- Weighted scenario sampling (common days vs rarer anomaly days)
+- Base scenario (SC1/SC2/SC3) + independent per-day overlay architecture: large meal, missed bolus, late bolus, prolonged aerobic, anaerobic — any combination can co-occur
+- Ground-truth ML labels exported per minute: `base_scenario`, `had_large_meal`, `had_missed_bolus`, `n_late_boluses`, `exercise_overlay`, `bolus_status`, `meal_size`, `exercise_type`
+- Dawn phenomenon (GH-driven EGP elevation 03:00–07:00) and cortisol morning insulin resistance (06:00–10:00) with per-patient `dawn_amp`
 - Safety/control stack:
   - hypo guard (basal suspension logic)
   - hypo rescue carbohydrates
@@ -58,56 +58,29 @@ Important defaults:
 
 Implemented in `src/input.py`.
 
-### Daily meal structure
+### Patient profile (sampled once per patient)
 
-Five meals per day:
+- **Base scenario**: SC1 (normal, 38%), SC2 (active aerobic every day, 27%), SC3 (sedentary, 35%)
+- **Meal count**: 3, 4, or 5 meals (equal thirds); deviates ±1 on 20% of days
+- **Bolus bias**: 0.78–0.95 (persistent per-patient carb underestimation)
 
-- breakfast
-- morning snack
-- lunch
-- afternoon snack
-- dinner
+### Per-day overlays (independent Bernoulli each day)
 
-with configurable timing/carb windows and deterministic cache behavior per patient/day/scenario.
+| Overlay | Rate | Effect |
+| --------- | ------ | -------- |
+| Large meal | 9% | One main meal ×1.8–2.1 carbs, ×2 duration, 0.70–0.85 underest |
+| Missed bolus | 9% | One meal gets no insulin |
+| Late bolus | ~7% | 1–2 meals bolused 30–90 min post-meal |
+| Prolonged aerobic | ~4.8% (SC1 only) | 75–120 min aerobic session |
+| Anaerobic | ~4.8% (SC1 only) | 20–50 min HIIT/resistance, 6000–9000 AC (EXPERIMENTAL) |
 
-### Scenarios
+SC2 patients always have a standard aerobic session (30–60 min, 1200–2000 AC) every day.
+Exercise overlays are mutually exclusive (XOR) and only apply to SC1 days.
 
-`N_SCENARIOS = 9`
+### Bolus timing distribution
 
-**Baseline:**
-
-- `1`: normal day (incidental AC baseline)
-- `2`: active day (moderate aerobic session, 30–75 min, 1200–2000 AC)
-- `3`: sedentary day (minimal AC)
-
-**Meal anomalies:**
-
-- `4`: restaurant meal (larger carbs, extended duration, under-bolused; lunch or dinner)
-- `5`: missed bolus (one meal bolus omitted)
-- `6`: late bolus (bolus at meal time instead of pre-meal)
-
-**Exercise anomalies:**
-
-- `7`: prolonged aerobic (60–90 min, 1500–2500 AC; triggers glycogen depletion)
-- `8`: anaerobic/resistance (30–60 min, 6000–9000 AC; EXPERIMENTAL parameters)
-- `9`: exercise + missed bolus (compound anomaly)
-
-### Weighted scenario sampling
-
-When `random_scenarios=True`, scenario draws are weighted with `SCENARIO_WEIGHTS`:
-
-- scenarios `1-3`: ~63% combined (normal 25%, active 18%, sedentary 20%)
-- scenarios `4-6`: ~26% combined (restaurant meal 8%, missed bolus 8%, late bolus 10%)
-- scenarios `7-9`: ~11% combined (prolonged aerobic 4%, anaerobic 4%, exercise+missed bolus 3%)
-
-### Exercise-meal overlap policy
-
-For exercise scenarios (2, 7, 8, 9):
-
-- majority of days enforce clean temporal separation from snack/dinner windows
-- minority of days allow controlled overlap as realistic outliers
-
-This supports cleaner labels for downstream ML while preserving rare overlap behavior.
+Normal boluses are delivered: 60% pre-meal (5–20 min before), 25% at onset (0–4 min),
+15% post-meal (1–20 min after) — matching empirical T1D behaviour.
 
 ## Safety and Control Stack
 
@@ -129,14 +102,15 @@ Stages:
 1. Initial-state rejection
    - initial glucose must be in `[initial_glucose_acceptance_min_mmol, initial_glucose_acceptance_max_mmol]`
 2. Instability rejection
-   - `max glucose > instability_max_glucose_mmol` (default 30.53 mmol/L / 550 mg/dL) — **fail-fast**: checked per day, aborts the loop immediately if any day exceeds the hard cap
+   - `max glucose > instability_max_glucose_mmol` (default 33.3 mmol/L / 600 mg/dL) — **fail-fast**: checked per day, aborts the loop immediately if any day exceeds the hard cap
    - `hyper% > instability_hyper_pct_threshold` (default 60%) — evaluated over the **full concatenated trajectory** after all days complete (cumulative average; cannot be checked per-day)
 3. Quality rejection — evaluated **per day** with **fail-fast**: the loop aborts on the first failing day
-   - exercise days (scenarios 2, 7, 8, 9): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 15%)
-   - all other days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 10%)
+   - exercise days (SC2 base or exercise overlay): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 17%)
+   - non-exercise days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 15%) — hard cap
+   - non-exercise days soft cap: hypo% ≤ 10%; if >2 days exceed this, patient rejected (chronic overinsulinisation check)
    - +`quality_max_hypo_pct_spillover_bonus` (2%) per exercise day in the **2-day lookback** window [d-2, d-1] — accounts for Z-state (τ_Z ≈ 600 min) compounding across consecutive exercise days
-   - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 75%)
-   - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 1.78 mmol/L / 32 mg/dL) rejects the patient
+   - all days: hyper% ≤ `quality_max_hyper_pct_threshold` (default 70%)
+   - hard floor: any minute with glucose < `quality_min_glucose_mmol` (default 2.0 mmol/L / 36 mg/dL) rejects the patient
 
 All thresholds are config-driven from `SimulationConfig`.
 
@@ -188,7 +162,7 @@ Data columns include:
 - `patient_id`, `patient_age_years`
 - `day`, `minute`, `absolute_minute`, `time`
 - `blood_glucose`, `insulin_mU_min`, `cho_mg_min`
-- `scenario_id`, `missed_meal_id`, `late_bolus_id` (ground-truth ML labels)
+- **Ground-truth ML labels**: `base_scenario`, `had_large_meal`, `had_missed_bolus`, `n_late_boluses`, `exercise_overlay` (per-day); `bolus_status`, `meal_size`, `exercise_type` (per-minute)
 
 ## Analysis Tooling
 
@@ -199,6 +173,17 @@ Data columns include:
 - per-patient and per-day breakdowns
 - input channel summaries
 - age distribution when available
+
+`analyze_large.py`:
+
+- designed for large cohorts (100K+ patients)
+- population-level glucose distribution, TIR/hypo/hyper rates
+- per-scenario breakdown
+
+`fix_parquet_boundaries.py`:
+
+- removes the duplicate row at each day boundary (day exports include minute 1440 which is also minute 0 of the next day)
+- should be run before analysis on multi-day exports
 
 `main.py` can run optional post-analysis automatically on latest results.
 
@@ -277,8 +262,9 @@ dtu-mt-patient-generator/
 ## Notes
 
 - Plot rendering is backend-aware (headless/Agg runs skip interactive `show()`).
-- Scenario perturbations (4/5/6) are applied consistently for label fidelity.
 - Age is sampled as integer years (stored as float in parameter container).
+- The anaerobic exercise overlay uses EXPERIMENTAL ETH parameters (not validated on T1D patients).
+- `fix_parquet_boundaries.py` should always be run before analysis on multi-day exports.
 
 ## References
 

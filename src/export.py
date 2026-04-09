@@ -76,6 +76,16 @@ def _format_patient_id(p_id: PatientId) -> str:
         return str(p_id)
 
 
+def _align_label_list(raw: Any, default: Any, n: int) -> list[Any]:
+    """Align a per-minute label list to exactly n elements, padding with default."""
+    if raw is None:
+        return [default] * n
+    lst: list[Any] = list(raw)
+    if len(lst) >= n:
+        return lst[:n]
+    return lst + [default] * (n - len(lst))
+
+
 def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
     """
     Flattens nested results dict into a single DataFrame.
@@ -119,13 +129,22 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     values.get("cho_mg_min", values.get("cho", [])),
                     dtype=np.float64,
                 )
-                # Ground-truth labels for ML — None for legacy data without these fields.
+                # Deprecated scalar labels — kept for backward compat with analysis scripts.
                 scenario_id = values.get("scenario_id", None)  # type: ignore[assignment]
                 missed_meal_id = values.get("missed_meal_id", None)  # type: ignore[assignment]
                 late_bolus_id = values.get("late_bolus_id", None)  # type: ignore[assignment]
-                # Full list of late-bolus meal IDs (empty list = no late bolus).
                 _raw_ids = values.get("late_bolus_ids", None)
-                late_bolus_ids_val = list(int(x) for x in _raw_ids) if _raw_ids else []     #type: ignore[assignment]
+                late_bolus_ids_val = list(int(x) for x in _raw_ids) if _raw_ids else []  # type: ignore[assignment]
+                # New per-day metadata
+                base_scenario_val = values.get("base_scenario", None)
+                had_large_meal_val = values.get("had_large_meal", values.get("had_restaurant", None))
+                had_missed_bolus_val = values.get("had_missed_bolus", None)
+                n_late_boluses_val = values.get("n_late_boluses", None)
+                exercise_overlay_val = values.get("exercise_overlay", None)
+                # Per-minute ML label arrays (may be absent in legacy data)
+                _bolus_status_raw = values.get("bolus_status", None)
+                _meal_size_raw = values.get("meal_size", None)
+                _exercise_type_raw = values.get("exercise_type", None)
             else:
                 values_arr = np.asarray(values, dtype=np.float64)
                 insulin_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
@@ -134,6 +153,14 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 missed_meal_id = None
                 late_bolus_id = None
                 late_bolus_ids_val = []
+                base_scenario_val = None
+                had_large_meal_val = None
+                had_missed_bolus_val = None
+                n_late_boluses_val = None
+                exercise_overlay_val = None
+                _bolus_status_raw = None
+                _meal_size_raw = None
+                _exercise_type_raw = None
 
             if values_arr.size == 0:
                 continue
@@ -158,6 +185,12 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
             absolute_minutes = (day_int * 1440) + minutes
             times = _minutes_to_clock_strings(absolute_minutes)
 
+            # Align per-minute ML label arrays to glucose length (pad with None/'none').
+            n = values_arr.size
+            bolus_status_col = _align_label_list(_bolus_status_raw, None, n)
+            meal_size_col = _align_label_list(_meal_size_raw, None, n)
+            exercise_type_col = _align_label_list(_exercise_type_raw, "none", n)
+
             blocks.append(pd.DataFrame({
                 "patient_id": p_id_str,
                 "patient_age_years": patient_age_years,
@@ -168,10 +201,21 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "blood_glucose": values_arr.astype(float),
                 "cho_mg_min": cho_arr.astype(float),
                 "insulin_mU_min": insulin_arr.astype(float),
+                # Day-level scenario metadata (scalar broadcast to all rows).
+                "base_scenario": base_scenario_val,
+                "had_large_meal": had_large_meal_val,
+                "had_missed_bolus": had_missed_bolus_val,
+                "n_late_boluses": n_late_boluses_val,
+                "exercise_overlay": exercise_overlay_val,
+                # Per-minute ML labels.
+                "bolus_status": bolus_status_col,
+                "meal_size": meal_size_col,
+                "exercise_type": exercise_type_col,
+                # Deprecated scalar labels — kept for backward compat with analysis scripts.
                 "scenario_id": scenario_id,
                 "missed_meal_id": missed_meal_id,
                 "late_bolus_id": late_bolus_id,
-                "late_bolus_ids": [late_bolus_ids_val] * values_arr.size,
+                "late_bolus_ids": [late_bolus_ids_val] * n,
             }))
 
     if not blocks:
@@ -186,6 +230,14 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "blood_glucose",
                 "cho_mg_min",
                 "insulin_mU_min",
+                "base_scenario",
+                "had_large_meal",
+                "had_missed_bolus",
+                "n_late_boluses",
+                "exercise_overlay",
+                "bolus_status",
+                "meal_size",
+                "exercise_type",
                 "scenario_id",
                 "missed_meal_id",
                 "late_bolus_id",

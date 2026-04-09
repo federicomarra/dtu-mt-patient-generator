@@ -12,7 +12,7 @@ from tqdm import tqdm
 # --- Imports from src ---
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
 from src.parameters import generate_monte_carlo_patients
-from src.input import scenario_with_cached_meals, get_cached_meal_schedule, N_SCENARIOS, SCENARIO_WEIGHTS, clear_meal_cache
+from src.input import scenario_with_cached_meals, get_cached_day_plan, compute_day_labels, clear_meal_cache
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
 from src.simulation_config import SimulationConfig
@@ -36,10 +36,21 @@ class DayResult(TypedDict):
     blood_glucose: np.ndarray
     insulin_mU_min: np.ndarray
     cho_mg_min: np.ndarray
-    scenario_id: int
-    missed_meal_id: int | None   # which meal (1-5) had no bolus; None if N/A
-    late_bolus_ids: list[int]    # meal IDs (1-5) with a late bolus; empty for N/A
-    late_bolus_id: int | None    # first (lowest) late-bolus meal ID, or None; kept for export compat
+    # Per-day metadata
+    base_scenario: int          # 1 (normal), 2 (active aerobic), 3 (sedentary)
+    had_large_meal: bool  # True if a large-meal event (restaurant/party) occurred today
+    had_missed_bolus: bool
+    n_late_boluses: int
+    exercise_overlay: int | None   # 7 (prolonged aerobic), 8 (anaerobic), or None
+    # Per-minute ML ground-truth labels (length = n_measurements)
+    bolus_status: list[str | None]   # 'normal' | 'missed' | 'late' | None
+    meal_size: list[str | None]      # 'normal' | 'large' | None
+    exercise_type: list[str]         # 'aerobic' | 'anaerobic' | 'prolonged' | 'none'
+    # Deprecated scalar labels — kept for backward compat with analysis scripts
+    scenario_id: int | None     # = base_scenario
+    missed_meal_id: int | None  # first missed-bolus meal slot, or None
+    late_bolus_ids: list[int]   # meal slots with late bolus
+    late_bolus_id: int | None   # first late-bolus slot, or None
 
 
 class PatientResult(TypedDict):
@@ -229,18 +240,18 @@ def run_simulation(
                 warmup_controller = ControllerState()
                 _wu_day_insulin = np.full(minutes_per_day + 1, np.nan, dtype=np.float64)
                 _wu_day_cho     = np.full(minutes_per_day + 1, np.nan, dtype=np.float64)
+                # Base scenario override for fixed-scenario runs (None = use patient profile)
+                _base_sc_override = None if config.random_scenarios else max(1, min(3, int(config.fixed_scenario)))
+
                 for _wu_idx in range(config.n_warmup_days):
                     _wu_cache_day = _wu_idx - config.n_warmup_days  # -n_warmup_days … -1
-                    if config.random_scenarios:
-                        _wu_scenario = int(rng.choice(N_SCENARIOS, p=SCENARIO_WEIGHTS)) + 1
-                    else:
-                        _wu_scenario = int(config.fixed_scenario)
                     _wu_day_insulin[:] = np.nan
                     _wu_day_cho[:] = np.nan
 
                     def _wu_ode(t: float, x: np.ndarray,
-                                _s: int = _wu_scenario, _d: int = _wu_cache_day,
-                                _c: ControllerState = warmup_controller) -> np.ndarray:
+                                _d: int = _wu_cache_day,
+                                _c: ControllerState = warmup_controller,
+                                _widx: int = _wu_idx) -> np.ndarray:
                         x_s = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0, posinf=1e6, neginf=-1e6)
                         np.clip(x_s, -1e6, 1e6, out=x_s)
                         _cm = int(np.floor(t))
@@ -248,7 +259,7 @@ def run_simulation(
                         # (which are discarded after warmup). It counts from 0 regardless
                         # of the negative cache-day index (_wu_cache_day) used for meals,
                         # so the two time references intentionally differ here.
-                        _abs = _wu_idx * minutes_per_day + _cm
+                        _abs = _widx * minutes_per_day + _cm
                         _g = float(x_s[0]) / vg_bw if vg_bw > 0.0 else 0.0
                         _iob = max(0.0, float(x_s[2]) + float(x_s[3])) / 1000.0
                         _beff, _icr_eff, _ = apply_guard_iob_isf(
@@ -260,12 +271,13 @@ def run_simulation(
                         )
                         _u, _d_cho, _ac = scenario_with_cached_meals(
                             time=_cm, patient_id=sim_patient_id, day=_d,
-                            basal_hourly=_beff, scenario=_s,
+                            basal_hourly=_beff, scenario=_base_sc_override,
                             insulin_carbo_ratio=_icr_eff, seed=config.random_seed,
                         )
                         dy = np.asarray(hovorka_equations(
                             _cm, x_s, patient_params,
-                            scenario_with_cached_meals, scenario=_s,
+                            scenario_with_cached_meals,
+                            scenario=1,  # dead — precomputed_inputs always provided; scenario dispatch already done above
                             patient_id=sim_patient_id, day=_d,
                             basal_hourly=_beff,
                             insulin_carbo_ratio=_icr_eff,
@@ -306,11 +318,9 @@ def run_simulation(
             # across day boundaries so the noise process is continuous over the full horizon.
             sensor_cgm_state: dict[str, float] = {}
             controller_state = ControllerState()
-            # Per-day quality tracking: list of (scenario_id, hypo_pct, hyper_pct, min_glucose).
-            # Rejection compares each day against its scenario-specific threshold so that
-            # exercise days (2, 7, 8, 9) use the looser exercise threshold even in random-scenario runs.
-            per_day_quality: list[tuple[int, float, float, float]] = []
-            _EXERCISE_SCENARIO_IDS: frozenset[int] = frozenset({2, 7, 8, 9})
+            # Per-day quality tracking: list of (is_exercise_day, hypo_pct, hyper_pct, min_glucose).
+            # Exercise days (sc2 base or sc7/sc8 overlay) use the looser exercise hypo threshold.
+            per_day_quality: list[tuple[bool, float, float, float]] = []
             # Fail-fast rejection: track running instability stats so we can abort
             # the day loop as soon as any day exceeds a threshold, rather than
             # simulating all N days before checking.
@@ -320,15 +330,11 @@ def run_simulation(
             # threshold (quality_max_hypo_pct_soft_threshold). Rejection fires when the count
             # exceeds quality_max_hypo_bad_nonex_days — see simulation_config.py for rationale.
             _hypo_bad_nonex_day_count: int = 0
+            # Base scenario override for fixed-scenario runs
+            _base_sc_override = None if config.random_scenarios else max(1, min(3, int(config.fixed_scenario)))
 
             # Simulate each day
             for day_idx in range(config.n_days):
-            
-                # Select scenario for this day
-                if config.random_scenarios:
-                    scenario = int(rng.choice(N_SCENARIOS, p=SCENARIO_WEIGHTS)) + 1
-                else:
-                    scenario = int(config.fixed_scenario)
 
                 # Per-day insulin sensitivity perturbation: ±15% CV, bounded ±35%.
                 # Mimics real T1D day-to-day variability (sleep, minor illness, stress).
@@ -360,7 +366,7 @@ def run_simulation(
                     # Basic insulin-on-board (IOB) estimate from subcutaneous depots [U].
                     # S1 and S2 are insulin masses in mU, so divide by 1000 to get units.
                     iob_u = max(0.0, float(x_safe[2]) + float(x_safe[3])) / 1000.0
-                    basal_hourly_effective, insulin_carbo_ratio_effective, _guard_latched = apply_guard_iob_isf(
+                    basal_hourly_effective, insulin_carbo_ratio_effective, _ = apply_guard_iob_isf(
                         current_abs_min=current_abs_min,
                         g_est=g_est,
                         iob_u=iob_u,
@@ -378,7 +384,7 @@ def run_simulation(
                         patient_id=sim_patient_id,
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
-                        scenario=scenario,
+                        scenario=_base_sc_override,
                         insulin_carbo_ratio=insulin_carbo_ratio_effective,
                         seed=config.random_seed,
                     )
@@ -391,7 +397,7 @@ def run_simulation(
                         x_safe,
                         patient_params,
                         scenario_with_cached_meals,
-                        scenario=scenario,
+                        scenario=1,  # dead — precomputed_inputs always provided; scenario dispatch done above
                         patient_id=sim_patient_id,
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
@@ -498,23 +504,41 @@ def run_simulation(
                     glycemia_day_array = glycemia_day_array * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
                     glycemia_day_physio = glycemia_day_physio * (float(patient_params['MwG']) / 10.0)  # mmol/L -> mg/dL
             
-                # Retrieve the cached meal schedule to extract ground-truth labels.
-                # scenario_with_cached_meals always populates _meal_cache before returning,
-                # so get_cached_meal_schedule is guaranteed to find the entry here.
-                meal_schedule = get_cached_meal_schedule(sim_patient_id, day_idx, scenario)
-                missed_meal_id = int(meal_schedule["missed_meal_id"]) if meal_schedule and meal_schedule["missed_meal_id"] is not None else None
-                _late_ids: list[int] = sorted(meal_schedule["late_bolus_ids"]) if meal_schedule else []
-                late_bolus_id: int | None = _late_ids[0] if _late_ids else None
+                # Retrieve the cached DayPlan to extract ground-truth labels.
+                # scenario_with_cached_meals always populates the day-plan cache before
+                # returning, so get_cached_day_plan is guaranteed to find the entry here.
+                day_plan = get_cached_day_plan(sim_patient_id, day_idx)
+                # Per-minute windowed ML labels from the day plan
+                _bolus_status_arr, _meal_size_arr, _exercise_type_arr = (
+                    compute_day_labels(day_plan, n_measurements)
+                    if day_plan is not None
+                    else ([None] * n_measurements, [None] * n_measurements, ['none'] * n_measurements)
+                )
+                # Deprecated scalar labels for backward compat with analysis scripts
+                _missed_slots: list[int] = sorted(
+                    [m.slot for m in day_plan.meals if m.bolus_status == 'missed']
+                ) if day_plan else []
+                _late_slots: list[int] = sorted(
+                    [m.slot for m in day_plan.meals if m.bolus_status == 'late']
+                ) if day_plan else []
 
                 # Store results for this day
-                results_tot[sim_patient_id]["days"][day_idx] = {
+                results_tot[sim_patient_id]["days"][day_idx] = {  # type: ignore[typeddict-item]
                     "blood_glucose": glycemia_day_array,
                     "insulin_mU_min": day_insulin,
                     "cho_mg_min": day_cho,
-                    "scenario_id": scenario,
-                    "missed_meal_id": missed_meal_id,
-                    "late_bolus_ids": _late_ids,
-                    "late_bolus_id": late_bolus_id,
+                    "base_scenario": day_plan.base_scenario if day_plan else 1,
+                    "had_large_meal": day_plan.had_large_meal if day_plan else False,
+                    "had_missed_bolus": day_plan.had_missed_bolus if day_plan else False,
+                    "n_late_boluses": day_plan.n_late_boluses if day_plan else 0,
+                    "exercise_overlay": day_plan.exercise_overlay if day_plan else None,
+                    "bolus_status": _bolus_status_arr,
+                    "meal_size": _meal_size_arr,
+                    "exercise_type": _exercise_type_arr,
+                    "scenario_id": day_plan.base_scenario if day_plan else None,
+                    "missed_meal_id": _missed_slots[0] if _missed_slots else None,
+                    "late_bolus_ids": _late_slots,
+                    "late_bolus_id": _late_slots[0] if _late_slots else None,
                 }
                 # Day 0 is kept in full (0..1440 = 1441 points).
                 # Subsequent days drop their first point (minute 0 = same physical
@@ -539,7 +563,8 @@ def run_simulation(
                     day_hypo_pct  = 100.0 * int(np.sum(physio_segment_mmol < 3.9))  / day_n
                     day_hyper_pct = 100.0 * int(np.sum(physio_segment_mmol > 10.0)) / day_n
                     day_min_glucose = float(np.min(physio_segment_mmol))
-                    per_day_quality.append((scenario, day_hypo_pct, day_hyper_pct, day_min_glucose))
+                    _is_exercise_day = day_plan.is_exercise_day if day_plan else False
+                    per_day_quality.append((_is_exercise_day, day_hypo_pct, day_hyper_pct, day_min_glucose))
 
                     # --- Fail-fast checks for this day ---
                     # Hard absolute cap: max glucose > 30.53 mmol/L on any single day guarantees
@@ -549,23 +574,20 @@ def run_simulation(
                     # out over N days and would be wrongly rejected early.
                     _day_max_glucose = float(np.max(physio_segment_mmol))
                     _running_max_glucose = max(_running_max_glucose, _day_max_glucose)
+                    _day_i = len(per_day_quality) - 1
                     if _running_max_glucose > instability_max_glucose_mmol:
-                        print(f"  [DEBUG] INSTABILITY pid={sim_patient_id} day={_day_i} scen={scenario} max_glucose={_running_max_glucose:.1f} mmol/L")
+                        _base_sc = day_plan.base_scenario if day_plan else 0
+                        print(f"  [DEBUG] INSTABILITY pid={sim_patient_id} day={_day_i} sc={_base_sc} ex={_is_exercise_day} max_glucose={_running_max_glucose:.1f} mmol/L")
                         _early_reject_reason = "instability"
                         break
 
                     # Quality: check this day immediately using the same spillover logic as the
                     # post-loop block.  per_day_quality[-1] is the entry just appended above.
-                    _day_i = len(per_day_quality) - 1
-                    _prev_was_exercise = (
-                        _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
-                    )
-                    _two_days_ago_was_exercise = (
-                        _day_i > 1 and per_day_quality[_day_i - 2][0] in _EXERCISE_SCENARIO_IDS
-                    )
+                    _prev_was_exercise = _day_i > 0 and per_day_quality[_day_i - 1][0]
+                    _two_days_ago_was_exercise = _day_i > 1 and per_day_quality[_day_i - 2][0]
                     _base_hypo_thresh = (
                         config.quality_max_hypo_pct_exercise_threshold
-                        if scenario in _EXERCISE_SCENARIO_IDS
+                        if _is_exercise_day
                         else quality_max_hypo_pct
                     )
                     _day_hypo_thresh = (
@@ -574,23 +596,24 @@ def run_simulation(
                         + (config.quality_max_hypo_pct_spillover_bonus if _two_days_ago_was_exercise else 0.0)
                     )
                     if day_hypo_pct > _day_hypo_thresh:
-                        print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                        print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} ex={_is_exercise_day} hypo={day_hypo_pct:.1f}% thresh={_day_hypo_thresh:.1f}%")
                         _early_reject_reason = "quality_hypo"
                         break
                     if day_min_glucose < config.quality_min_glucose_mmol:
-                        print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={scenario} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                        print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} ex={_is_exercise_day} min={day_min_glucose:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
                         _early_reject_reason = "quality_hypo"
                         break
                     # Tier-2 chronic-hypo check (non-exercise days only): accumulate bad days and
                     # reject when the count exceeds the allowed maximum. Exercise hypo is expected
                     # physiology and tracked separately via the exercise threshold above.
-                    if scenario not in _EXERCISE_SCENARIO_IDS and day_hypo_pct > config.quality_max_hypo_pct_soft_threshold:
+                    if not _is_exercise_day and day_hypo_pct > config.quality_max_hypo_pct_soft_threshold:
                         _hypo_bad_nonex_day_count += 1
                         if _hypo_bad_nonex_day_count > config.quality_max_hypo_bad_nonex_days:
-                            print(f"  [DEBUG] CHRONIC_HYPO pid={sim_patient_id} bad_nonex_days={_hypo_bad_nonex_day_count} on day={_day_i} scen={scenario} hypo={day_hypo_pct:.1f}%")
+                            print(f"  [DEBUG] CHRONIC_HYPO pid={sim_patient_id} bad_nonex_days={_hypo_bad_nonex_day_count} on day={_day_i} ex={_is_exercise_day} hypo={day_hypo_pct:.1f}%")
                             _early_reject_reason = "quality_hypo"
                             break
                     if day_hyper_pct > quality_max_hyper_pct:
+                        print(f"  [DEBUG] HYPER_FAIL  pid={sim_patient_id} day={_day_i} ex={_is_exercise_day} hyper={day_hyper_pct:.1f}% thresh={quality_max_hyper_pct:.1f}%")
                         _early_reject_reason = "quality_hyper"
                         break
 
@@ -637,27 +660,22 @@ def run_simulation(
                 rejected_instability += 1
                 del results_tot[sim_patient_id]
                 continue
-            # Quality: per-day scenario-aware rejection.
-            # Base threshold depends on the day's own scenario (exercise days use the looser
-            # exercise threshold). The spillover bonus is applied once per exercise day found
-            # in the 2-day lookback window [d-2, d-1]: the Z state (tau_Z≈600 min) retains
-            # ~40% after 1 day and ~9% after 2 days, and consecutive exercise days pre-load Z
-            # to a higher baseline so each prior exercise day contributes independently.
+            # Quality: per-day exercise-aware rejection.
+            # Base threshold depends on whether the day had exercise (sc2 base or sc7/sc8 overlay).
+            # The spillover bonus is applied for each exercise day in the 2-day lookback window:
+            # the Z state (tau_Z≈600 min) retains ~40% after 1 day and ~9% after 2 days, so
+            # consecutive exercise days pre-load Z and each contributes independently.
             # Also enforce a hard minimum glucose floor across all days.
             _quality_hypo_fail  = False
             _quality_hyper_fail = False
             _quality_floor_fail = False
             _postloop_bad_nonex_days: int = 0
-            for _day_i, (_scen_id, _day_hypo, _day_hyper, _day_min) in enumerate(per_day_quality):
-                _prev_was_exercise = (
-                    _day_i > 0 and per_day_quality[_day_i - 1][0] in _EXERCISE_SCENARIO_IDS
-                )
-                _two_days_ago_was_exercise = (
-                    _day_i > 1 and per_day_quality[_day_i - 2][0] in _EXERCISE_SCENARIO_IDS
-                )
+            for _day_i, (_day_is_ex, _day_hypo, _day_hyper, _day_min) in enumerate(per_day_quality):
+                _prev_was_exercise = _day_i > 0 and per_day_quality[_day_i - 1][0]
+                _two_days_ago_was_exercise = _day_i > 1 and per_day_quality[_day_i - 2][0]
                 _base_hypo_thresh = (
                     config.quality_max_hypo_pct_exercise_threshold
-                    if _scen_id in _EXERCISE_SCENARIO_IDS
+                    if _day_is_ex
                     else quality_max_hypo_pct
                 )
                 _day_hypo_thresh = (
@@ -667,15 +685,15 @@ def run_simulation(
                 )
                 if _day_hypo > _day_hypo_thresh:
                     _quality_hypo_fail = True
-                    print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} scen={_scen_id} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
+                    print(f"  [DEBUG] HYPO_FAIL  pid={sim_patient_id} day={_day_i} ex={_day_is_ex} hypo={_day_hypo:.1f}% thresh={_day_hypo_thresh:.1f}%")
                 # Tier-2 chronic-hypo check (non-exercise days only, mirrors fail-fast block)
-                if _scen_id not in _EXERCISE_SCENARIO_IDS and _day_hypo > config.quality_max_hypo_pct_soft_threshold:
+                if not _day_is_ex and _day_hypo > config.quality_max_hypo_pct_soft_threshold:
                     _postloop_bad_nonex_days += 1
                 if _day_hyper > quality_max_hyper_pct:
                     _quality_hyper_fail = True
                 if _day_min < config.quality_min_glucose_mmol:
                     _quality_floor_fail = True
-                    print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} scen={_scen_id} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
+                    print(f"  [DEBUG] FLOOR_FAIL pid={sim_patient_id} day={_day_i} ex={_day_is_ex} min={_day_min:.3f} mmol/L floor={config.quality_min_glucose_mmol}")
             # Tier-2: reject if chronic non-exercise hypo pattern persists across the simulation
             if _postloop_bad_nonex_days > config.quality_max_hypo_bad_nonex_days:
                 _quality_hypo_fail = True
@@ -751,7 +769,7 @@ def run_simulation(
         try:
             accepted_ages: list[float] = []
             for p_data in results_tot.values():
-                params = p_data.get("params")
+                params = p_data["params"]  # always present for accepted patients
                 age_raw = params.get("age_years")
                 if age_raw is not None:
                     try:

@@ -314,7 +314,14 @@ def _seeded_rng(
         return np.random.default_rng()
     value = int(seed) + int(patient_id) * _PATIENT_SEED_FACTOR + stream_offset
     if day is not None:
-        value += int(day) * _DAY_SEED_FACTOR
+        d = int(day)
+        if d < 0:
+            # Warmup days use negative indices (-n_warmup_days … -1).  Map them to
+            # large unique positive offsets (1_000_000+d) so the combined seed stays
+            # non-negative even when seed=0 and patient_id=0.  The mapped range
+            # (~999_997–999_999) is far above any realistic recorded day count.
+            d = 1_000_000 + d
+        value += d * _DAY_SEED_FACTOR
     return np.random.default_rng(value)
 
 

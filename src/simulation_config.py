@@ -15,7 +15,7 @@ class SimulationConfig:
     noise_autocorr: float = 0.7   # AR(1) φ coefficient for the lagged CGM noise model
     cgm_lag_alpha: float = 0.25   # first-order CGM lag blend factor (0 < α ≤ 1); 0.25 ≈ 4-min physiological lag
     random_scenarios: bool = False
-    fixed_scenario: int = 1
+    fixed_scenario: int = 1  # base scenario for all patients when random_scenarios=False: 1=normal, 2=active aerobic, 3=sedentary
     clip_states: bool = True
     enable_plots: bool = True
     random_seed: Optional[int] = None
@@ -67,7 +67,7 @@ class SimulationConfig:
     #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
     #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 50.0
+    quality_max_hyper_pct_threshold: float = 70.0
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L). With the tighter safety stack (guard 3.9, L1 rescue
     # 3.9, L2 rescue 3.0) floor breaches should be rare; the floor guards against the tail
@@ -129,7 +129,7 @@ class SimulationConfig:
     cgm_min_glucose_mmol: float = 1.5
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 12.5  # ~225 mg/dL: corrects sustained highs while preserving realistic T1D post-meal excursions 10–12 mmol/L; IOB guard prevents double-dosing
+    correction_isf_target_mmol: float = 10.5  # ~189 mg/dL: fires when glucose first exceeds 10.5 mmol/L, capping the duration of post-meal excursions and preventing the 10–12.5 mmol/L "dead zone" that caused chronic quality_hyper rejections at long horizons (14+ days). IOB guard prevents double-dosing.
     correction_isf_check_interval_min: int = 5
     correction_isf_cooldown_min: int = 90
     correction_isf_max_bolus_units: float = 2.0

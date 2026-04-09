@@ -122,7 +122,7 @@ def _dawn_egp_factor(t_min: float, amp: float) -> float:
 
     Growth hormone pulses at 01:00–03:00 during deep sleep; the downstream
     hepatic effect is delayed ~2 h, producing elevated glycogenolysis and
-    gluconeogenesis from ~03:00 onward (Perriello et al. 1991).  This is the
+    gluconeogenesis from ~03:00 onward (Perriello et al. 1988).  This is the
     EARLIER of the two dawn-hormone effects and is predominantly a FASTING
     phenomenon (peaks before most patients eat).
 

@@ -8,15 +8,19 @@ Three levels of verification for each target glucose:
 
 Also tests the mg/dL input path (what the main simulation uses) in addition to mmol/L.
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.model import (
+    ParameterSet,
+    StateVector,
     compute_optimal_steady_state_from_glucose,
     hovorka_equations,
     get_glucose_from_state,
@@ -33,13 +37,13 @@ TARGETS_MGDL   = [81.0, 90.0, 100.0, 108.0, 126.0, 144.0]   # same values, diffe
 N_RANDOM_PATIENTS = 5
 
 
-def _basal_from_state(state: list[float], params: dict) -> float:
+def _basal_from_state(state: StateVector, params: ParameterSet) -> float:
     """Derive calibrated basal [mU/min] from S1 at steady state."""
     tau_i = float(params["tauI"])
     return float(state[2]) / tau_i if tau_i > 0 else 0.5 * 1000.0 / 60.0
 
 
-def _run_level1_glucose_accuracy(state, target_mmol, params, label):
+def _run_level1_glucose_accuracy(state: StateVector, target_mmol: float, params: ParameterSet, label: str) -> float:
     """Level 1: returned glucose matches target within GLUCOSE_TOLERANCE_MMOL."""
     glucose = get_glucose_from_state(state, params)
     err = abs(glucose - target_mmol)
@@ -50,11 +54,11 @@ def _run_level1_glucose_accuracy(state, target_mmol, params, label):
     return glucose
 
 
-def _run_level2_fixed_point(state, params, label):
+def _run_level2_fixed_point(state: StateVector, params: ParameterSet, label: str) -> float:
     """Level 2: all ODE derivatives are ~0 at the returned state."""
     basal = _basal_from_state(state, params)
 
-    def basal_only(*_args, **_kwargs):
+    def basal_only(*_args: object, **_kwargs: object) -> tuple[float, float, float]:
         return basal, 0.0, 0.0
 
     derivs = np.array(
@@ -76,7 +80,7 @@ def _run_level2_fixed_point(state, params, label):
     return max_deriv
 
 
-def _run_level3_integration_stability(state, params, label):
+def _run_level3_integration_stability(state: StateVector, params: ParameterSet, label: str) -> float:
     """Level 3: forward ODE integration with basal-only for 60 min stays flat."""
     basal = _basal_from_state(state, params)
     vg_bw = float(params["VG"]) * float(params["BW"])
@@ -86,13 +90,13 @@ def _run_level3_integration_stability(state, params, label):
         x_safe = np.nan_to_num(np.asarray(x, dtype=np.float64), copy=True, nan=0.0)
         result = hovorka_equations(
             int(t), x_safe, params,
-            input_func=lambda *a, **k: (basal, 0.0, 0.0),
+            input_func=lambda *a, **k: (basal, 0.0, 0.0),  # type: ignore[misc]
             scenario=1,
             precomputed_inputs=(basal, 0.0, 0.0),
         )
         return np.asarray(result, dtype=np.float64)
 
-    sol = solve_ivp(
+    sol = solve_ivp(  # type: ignore[misc]
         ode_func,
         (0, 60),
         np.array(state, dtype=np.float64),
@@ -103,7 +107,8 @@ def _run_level3_integration_stability(state, params, label):
         max_step=1.0,
     )
 
-    glucose_trace = sol.y[0, :] / vg_bw
+    sol_y: np.ndarray = np.asarray(sol.y, dtype=np.float64)  # type: ignore[misc]
+    glucose_trace: np.ndarray = sol_y[0, :] / vg_bw
     drift = float(np.max(np.abs(glucose_trace - g0)))
     assert drift <= DRIFT_TOLERANCE_MMOL, (
         f"[{label}] Level 3 FAILED: glucose drifted {drift:.4f} mmol/L over 60 min "

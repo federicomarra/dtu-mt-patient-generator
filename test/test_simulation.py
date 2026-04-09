@@ -27,8 +27,8 @@ def _parse_args() -> argparse.Namespace:
         "--scenario",
         type=int,
         default=2,
-        choices=[1, 2, 3, 4, 5, 6],
-        help="Fixed scenario to run when --random-scenarios is disabled",
+        choices=[1, 2, 3],
+        help="Fixed base scenario (1=normal, 2=active aerobic, 3=sedentary) when --random-scenarios is disabled",
     )
     parser.add_argument(
         "--random-scenarios",
@@ -138,6 +138,8 @@ if __name__ == "__main__":
 
     if results is None:
         raise RuntimeError("Simulation did not return results. Expected return_results=True.")
+    if not isinstance(results, dict):
+        raise RuntimeError(f"Unexpected return type from run_simulation: {type(results)}")
 
     bg_all, ages_all = _collect_bg_and_age(results)
     _print_analysis_summary(bg_all, ages_all)

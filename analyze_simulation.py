@@ -14,7 +14,6 @@ import argparse
 import sys
 from pathlib import Path
 import pandas as pd  # type: ignore[import-untyped]
-import numpy as np  # type: ignore[import-untyped]
 
 
 def pick_input_column(df: pd.DataFrame, primary: str, legacy: str) -> str | None:
@@ -27,33 +26,19 @@ def pick_input_column(df: pd.DataFrame, primary: str, legacy: str) -> str | None
 
 
 def find_latest_results() -> Path:
-    """Find the most recent PARQUET orCSV results file."""
-    results_dir = Path("monte_carlo_results_parallel")
-    if not results_dir.exists():
-        raise FileNotFoundError("No monte_carlo_results_parallel directory found")
+    """Find the most recent PARQUET or CSV results file."""
+    candidates: list[Path] = []
+    for results_dir in (Path("monte_carlo_results"), Path("monte_carlo_results_parallel")):
+        if results_dir.exists():
+            candidates.extend(results_dir.glob("**/results_*.parquet"))
+            candidates.extend(results_dir.glob("**/results_*.csv"))
 
-    # Find all PARQUET files
-    parquet_files = list(results_dir.glob("**/results_*.parquet"))
-    # Find all CSV files
-    csv_files = list(results_dir.glob("**/results_*.csv"))
+    if not candidates:
+        raise FileNotFoundError("No results files found in monte_carlo_results/ or monte_carlo_results_parallel/")
 
-    if not csv_files and not parquet_files:
-        raise FileNotFoundError("No results PARQUET or CSV files found")
-    
-    # Sort by modification time, get most recent
-    latest_csv: Path | None = max(csv_files, key=lambda p: p.stat().st_mtime) if csv_files else None
-    latest_parquet: Path | None = max(parquet_files, key=lambda p: p.stat().st_mtime) if parquet_files else None
-
-    print(f"Latest CSV: {latest_csv}")
-    print(f"Latest Parquet: {latest_parquet}")
-
-    if latest_csv is not None and latest_parquet is not None:
-        return latest_csv if latest_csv.stat().st_mtime >= latest_parquet.stat().st_mtime else latest_parquet
-    if latest_parquet is not None:
-        return latest_parquet
-    if latest_csv is not None:
-        return latest_csv
-    raise FileNotFoundError("No results PARQUET or CSV files found")
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    print(f"Latest file: {latest}")
+    return latest
 
 def analyze_results(file_path: Path) -> None:
     """Analyze simulation results and print statistics."""
@@ -67,9 +52,12 @@ def analyze_results(file_path: Path) -> None:
     else:
         df = pd.read_csv(file_path)  # type: ignore[assignment]
     
-    # Auto-detect unit (mg/dL vs mmol/L)
+    # Auto-detect unit (mg/dL vs mmol/L).
+    # mmol/L ceiling is ~33 mmol/L (instability threshold 33.3 + CGM noise).
+    # mg/dL values are always ≥18× higher; min physiological mg/dL reading >50.
+    # Threshold at 50 safely separates the two unit spaces (mirrors analyze_large.py).
     glucose_max = float(df['blood_glucose'].max())  # type: ignore[arg-type]
-    is_mgdl = glucose_max > 30  # mg/dL values typically > 30, mmol/L typically < 25
+    is_mgdl = glucose_max > 50
     unit_str = "mg/dL" if is_mgdl else "mmol/L"
     
     # Set thresholds based on unit
@@ -121,11 +109,15 @@ def analyze_results(file_path: Path) -> None:
             print(f"Min:    {float(age_series.min()):.2f} years")
             print(f"Max:    {float(age_series.max()):.2f} years")
     
-    # Per-patient breakdown
+    # Per-patient breakdown (capped at 20 patients; use analyze_large.py for full cohorts)
+    all_pids = sorted(df['patient_id'].unique())  # type: ignore[arg-type]
+    show_pids = all_pids[:20]
     print('\n=== Per-Patient Analysis ===')
+    if len(all_pids) > 20:
+        print(f"(showing first 20 of {len(all_pids)} patients — use analyze_large.py for full cohort)")
     print(f"{'Patient':<8} {'Min':>7} {'Max':>7} {'Mean':>7} {'Hypo%':>7} {'Hyper%':>7}")
     print('-' * 50)
-    for patient_id in sorted(df['patient_id'].unique()):  # type: ignore[arg-type]
+    for patient_id in show_pids:
         patient_df = df[df['patient_id'] == patient_id]  # type: ignore[index]
         min_g = float(patient_df['blood_glucose'].min())  # type: ignore[arg-type]
         max_g = float(patient_df['blood_glucose'].max())  # type: ignore[arg-type]
@@ -175,12 +167,15 @@ def analyze_results(file_path: Path) -> None:
             print(f"Cohort avg insulin per day [U]:  {',  '.join(day_strs_ins)}")
 
         if 'day' in df.columns:
-            print('  Per-patient, per-day insulin [U]:')
+            all_pt_ids = sorted(df['patient_id'].unique())
+            show_pt_ids = all_pt_ids[:20]
+            truncated = len(all_pt_ids) > 20
+            print(f"  Per-patient, per-day insulin [U]{' (first 20 patients)' if truncated else ''}:")
             pt_day = insulin_u.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
             days_present = sorted(df['day'].unique())
             header = f"  {'Patient':<10}" + "".join(f" {'Day '+str(d):>9}" for d in days_present) + f" {'Total':>9}"
             print(header)
-            for pid in sorted(df['patient_id'].unique()):
+            for pid in show_pt_ids:
                 row_total = float(insulin_by_patient.get(pid, 0.0))
                 parts: list[str] = []
                 for d in days_present:
@@ -206,12 +201,15 @@ def analyze_results(file_path: Path) -> None:
             print(f"Cohort avg CHO per day [g]:      {',  '.join(day_strs_cho)}")
 
         if 'day' in df.columns:
-            print('  Per-patient, per-day CHO [g]:')
+            all_pt_ids_cho = sorted(df['patient_id'].unique())
+            show_pt_ids_cho = all_pt_ids_cho[:20]
+            truncated_cho = len(all_pt_ids_cho) > 20
+            print(f"  Per-patient, per-day CHO [g]{' (first 20 patients)' if truncated_cho else ''}:")
             pt_day_cho = cho_g.groupby([df['patient_id'], df['day']]).sum()  # type: ignore[call-overload]
             days_present = sorted(df['day'].unique())
             header = f"  {'Patient':<10}" + "".join(f" {'Day '+str(d):>9}" for d in days_present) + f" {'Total':>9}"
             print(header)
-            for pid in sorted(df['patient_id'].unique()):
+            for pid in show_pt_ids_cho:
                 row_total = float(cho_by_patient.get(pid, 0.0))
                 parts: list[str] = []
                 for d in days_present:
@@ -238,31 +236,59 @@ def analyze_results(file_path: Path) -> None:
             hyper = 100 * float((day_df['blood_glucose'] > hyper_threshold).sum()) / len(day_df)  # type: ignore[arg-type]
             print(f'{day:<5} {tir:11.1f}% {hypo:9.1f}% {hyper:9.1f}%')
     
-    # Per-scenario breakdown (ML label validation)
-    if 'scenario_id' in df.columns and df['scenario_id'].notna().any():
-        scenario_names = {
-            1: "normal",
-            2: "active (aerobic)",
-            3: "sedentary",
-            4: "restaurant meal",
-            5: "missed bolus",
-            6: "late bolus",
-            7: "prolonged aerobic",
-            8: "anaerobic",
-            9: "exercise+missed bolus",
-        }
-        print('\n=== Per-Scenario Glycemic Profile ===')
-        print(f"{'Scen':<5} {'Name':<24} {'Days':>5} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
-        print('-' * 62)
-        for sid in sorted(df['scenario_id'].dropna().unique()):
-            s_df = df[df['scenario_id'] == sid]         # type: ignore[index]   
-            n_days = int(s_df.groupby(['patient_id', 'day']).ngroups) if 'day' in df.columns else '-'   # type: ignore[call-overload]
-            tir = 100 * float(((s_df['blood_glucose'] >= hypo_threshold) & (s_df['blood_glucose'] <= hyper_threshold)).sum()) / len(s_df)   # type: ignore[arg-type]
-            hypo = 100 * float((s_df['blood_glucose'] < hypo_threshold).sum()) / len(s_df)   # type: ignore[arg-type]
-            hyper = 100 * float((s_df['blood_glucose'] > hyper_threshold).sum()) / len(s_df)   # type: ignore[arg-type]
-            mean_g = float(s_df['blood_glucose'].mean())    # type: ignore[arg-type]
-            name = scenario_names.get(int(sid), f"scenario {int(sid)}")
-            print(f"{int(sid):<5} {name:<24} {n_days:>5} {tir:>6.1f}% {hypo:>6.1f}% {hyper:>6.1f}% {mean_g:>7.2f}")
+    # Per-base-scenario breakdown
+    base_scen_col = "base_scenario" if "base_scenario" in df.columns else "scenario_id"
+    base_scen_names = {1: "normal", 2: "active aerobic", 3: "sedentary"}
+    if base_scen_col in df.columns and df[base_scen_col].notna().any():
+        print(f'\n=== Per-Base-Scenario Glycemic Profile (column: {base_scen_col}) ===')
+        print(f"{'Scen':<5} {'Name':<18} {'Days':>6} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
+        print('-' * 58)
+        for sid in sorted(df[base_scen_col].dropna().unique()):
+            s_df = df[df[base_scen_col] == sid]  # type: ignore[index]
+            n_days = int(s_df.groupby(['patient_id', 'day']).ngroups) if 'day' in df.columns else '-'  # type: ignore[call-overload]
+            tir = 100 * float(((s_df['blood_glucose'] >= hypo_threshold) & (s_df['blood_glucose'] <= hyper_threshold)).sum()) / len(s_df)  # type: ignore[arg-type]
+            hypo = 100 * float((s_df['blood_glucose'] < hypo_threshold).sum()) / len(s_df)  # type: ignore[arg-type]
+            hyper = 100 * float((s_df['blood_glucose'] > hyper_threshold).sum()) / len(s_df)  # type: ignore[arg-type]
+            mean_g = float(s_df['blood_glucose'].mean())  # type: ignore[arg-type]
+            name = base_scen_names.get(int(sid), f"sc{int(sid)}")
+            print(f"{int(sid):<5} {name:<18} {n_days:>6} {tir:>6.1f}% {hypo:>6.1f}% {hyper:>6.1f}% {mean_g:>7.2f}")
+
+    # Day-level anomaly overlay rates (one row per patient-day)
+    if 'day' in df.columns:
+        day_df = df.drop_duplicates(subset=['patient_id', 'day'])
+        total_days = len(day_df)
+        print(f'\n=== Day-Level Anomaly Overlay Rates (n={total_days} patient-days) ===')
+        for col, label in [
+            ('had_large_meal',   'Large meal'),
+            ('had_missed_bolus', 'Missed bolus'),
+            ('n_late_boluses',   'Late bolus (avg count)'),
+            ('exercise_overlay', 'Exercise overlay'),
+        ]:
+            if col not in df.columns:
+                continue
+            series = day_df[col].dropna()
+            if col == 'n_late_boluses':
+                print(f"  {label:<28} {float(series.mean()):.3f} avg/day  (total {int(series.sum())})")
+            elif col == 'exercise_overlay':
+                n_overlay = int((series.notna() & (series != 0)).sum())
+                print(f"  {label:<28} {100*n_overlay/total_days:.1f}%  ({n_overlay}/{total_days} days)")
+            else:
+                n_true = int(series.astype(bool).sum())
+                print(f"  {label:<28} {100*n_true/total_days:.1f}%  ({n_true}/{total_days} days)")
+
+    # Per-minute ML label distributions
+    for col, label in [
+        ('bolus_status', 'Bolus Status'),
+        ('meal_size',    'Meal Size'),
+        ('exercise_type','Exercise Type'),
+    ]:
+        if col not in df.columns:
+            continue
+        vc = df[col].fillna('none').value_counts(dropna=False)
+        total_col = int(vc.sum())
+        print(f'\n=== Per-Minute ML Labels: {label} ===')
+        for val, cnt in vc.items():
+            print(f"  {str(val):<20} {int(cnt):>10,}  ({100*int(cnt)/total_col:5.1f}%)")
 
     print(f"\n{'='*70}\n")
 

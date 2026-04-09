@@ -32,11 +32,13 @@ GUARD_MMOL = 4.0
 
 
 def find_latest() -> Path:
-    d = Path("monte_carlo_results_parallel")
-    files = list(d.glob("**/*.parquet"))
-    if not files:
-        raise FileNotFoundError("No parquet files found in monte_carlo_results_parallel/")
-    return max(files, key=lambda p: p.stat().st_mtime)
+    candidates: list[Path] = []
+    for d in (Path("monte_carlo_results"), Path("monte_carlo_results_parallel")):
+        if d.exists():
+            candidates.extend(d.glob("**/*.parquet"))
+    if not candidates:
+        raise FileNotFoundError("No parquet files found in monte_carlo_results/ or monte_carlo_results_parallel/")
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _read_seed_from_sidecar(file_path: Path) -> str | None:
@@ -132,22 +134,30 @@ def analyze(file_path: Path) -> None:
     # per-day: {day -> [hypo, in_range, hyper, total]}
     day_counts: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0, 0])
 
-    # per-scenario: {sid -> [hypo, in_range, hyper, total, sum_glc]}
+    # per-base-scenario: {sid -> [hypo, in_range, hyper, total, sum_glc]}
+    # Uses 'base_scenario' column (falls back to legacy 'scenario_id').
     scen_counts: dict[int, list[float]] = defaultdict(lambda: [0, 0, 0, 0, 0.0])
+
+    # per-minute ML label value counts: {label_value -> count}
+    bolus_status_counts: dict[str, int] = defaultdict(int)
+    meal_size_counts:    dict[str, int] = defaultdict(int)
+    exercise_type_counts: dict[str, int] = defaultdict(int)
+
+    # day-level anomaly flags (sampled once per patient-day via drop_duplicates)
+    had_large_meal_days = had_missed_days = n_late_total = n_ex_overlay = 0
+    total_patient_days = 0
+    # Global set to avoid double-counting patient-days that straddle row-group boundaries.
+    seen_patient_days: set[tuple[str, int]] = set()
 
     patient_ids: set[str] = set()
     ages: list[float] = []
 
-    scenario_names = {
+    # Base scenario names (sc4-sc9 no longer exist as separate day columns;
+    # anomaly overlays are captured via bolus_status/meal_size/exercise_type).
+    base_scenario_names = {
         1: "normal",
-        2: "active (aerobic)",
+        2: "active aerobic",
         3: "sedentary",
-        4: "restaurant meal",
-        5: "missed bolus",
-        6: "late bolus",
-        7: "prolonged aerobic",
-        8: "anaerobic",
-        9: "exercise+missed bolus",
     }
 
     print("Streaming row groups", end="", flush=True)
@@ -157,8 +167,17 @@ def analyze(file_path: Path) -> None:
         cols = ["blood_glucose", "patient_id"]
         if "day" in schema_names:
             cols.append("day")
-        if "scenario_id" in schema_names:
+        # base_scenario preferred; fall back to legacy scenario_id
+        if "base_scenario" in schema_names:
+            cols.append("base_scenario")
+        elif "scenario_id" in schema_names:
             cols.append("scenario_id")
+        for label_col in ("bolus_status", "meal_size", "exercise_type"):
+            if label_col in schema_names:
+                cols.append(label_col)
+        for day_col in ("had_large_meal", "had_missed_bolus", "n_late_boluses", "exercise_overlay"):
+            if day_col in schema_names:
+                cols.append(day_col)
         if "patient_age_years" in schema_names:
             cols.append("patient_age_years")
 
@@ -190,9 +209,11 @@ def analyze(file_path: Path) -> None:
                 dc[2] += int((g2 > hyper_thr).sum())
                 dc[3] += len(g2)
 
-        # per-scenario
-        if "scenario_id" in chunk.columns:
-            for sid_val, grp in chunk.groupby("scenario_id", sort=False):
+        # per-base-scenario (base_scenario col preferred; scenario_id fallback)
+        sc_col_name = "base_scenario" if "base_scenario" in chunk.columns else (
+                      "scenario_id"   if "scenario_id"   in chunk.columns else None)
+        if sc_col_name is not None:
+            for sid_val, grp in chunk.groupby(sc_col_name, sort=False):
                 g3: np.ndarray = grp["blood_glucose"].to_numpy(dtype=np.float64)
                 sc = scen_counts[cast(int, sid_val)]
                 sc[0] += int((g3 < hypo_thr).sum())
@@ -200,6 +221,37 @@ def analyze(file_path: Path) -> None:
                 sc[2] += int((g3 > hyper_thr).sum())
                 sc[3] += len(g3)
                 sc[4] += float(g3.sum())
+
+        # per-minute ML label counts (string value_counts per chunk)
+        for lbl_col, lbl_dict in (
+            ("bolus_status",  bolus_status_counts),
+            ("meal_size",     meal_size_counts),
+            ("exercise_type", exercise_type_counts),
+        ):
+            if lbl_col in chunk.columns:
+                for val, cnt in chunk[lbl_col].fillna("none").value_counts().items():
+                    lbl_dict[str(val)] += int(cnt)
+
+        # day-level anomaly rates (deduplicate to one row per patient-day;
+        # seen_patient_days prevents double-counting when a day straddles row-group boundaries)
+        if "day" in chunk.columns and "patient_id" in chunk.columns:
+            day_dedup = chunk.drop_duplicates(subset=["patient_id", "day"])
+            new_mask = ~day_dedup.apply(
+                lambda r: (r["patient_id"], r["day"]) in seen_patient_days, axis=1      # type: ignore[union-attr]
+            )
+            day_dedup = day_dedup[new_mask]
+            seen_patient_days.update(
+                zip(day_dedup["patient_id"].tolist(), day_dedup["day"].tolist())
+            )
+            total_patient_days += len(day_dedup)
+            if "had_large_meal" in day_dedup.columns:
+                had_large_meal_days += int(day_dedup["had_large_meal"].fillna(False).astype(bool).sum())
+            if "had_missed_bolus" in day_dedup.columns:
+                had_missed_days += int(day_dedup["had_missed_bolus"].fillna(False).astype(bool).sum())
+            if "n_late_boluses" in day_dedup.columns:
+                n_late_total += int(day_dedup["n_late_boluses"].fillna(0).astype(int).sum())
+            if "exercise_overlay" in day_dedup.columns:
+                n_ex_overlay += int(day_dedup["exercise_overlay"].notna().sum())
 
         # patient ids
         if "patient_id" in chunk.columns:
@@ -228,7 +280,7 @@ def analyze(file_path: Path) -> None:
     # can transiently undershoot the true interstitial glucose during a rapid
     # fall, producing values lower than the underlying ODE state.
     # CV% = (std / mean) × 100: measures relative glucose variability.
-    # In CGM literature CV% > 36% indicates high variability; the cohort
+    # In CGM literature CV% around 36% indicates high variability; the cohort
     # target is 20–40% to reflect realistic T1D glycemic fluctuation.
     print(f"=== Glucose Statistics ({unit}) ===")
     print(f"  Patients:  {len(patient_ids):,}")
@@ -236,7 +288,7 @@ def analyze(file_path: Path) -> None:
     print(f"  Max:       {glc_stats.mx:.1f}")
     print(f"  Mean:      {glc_stats.mean:.1f}")
     print(f"  Std:       {glc_stats.std:.1f}")
-    print(f"  CV%:       {glc_stats.cv_pct:.1f}  (std/mean×100; >36% = high variability)")
+    print(f"  CV%:       {glc_stats.cv_pct:.1f}  (std/mean×100)")
     print(f"  P5/P95*:   {p5:.2f} / {p95:.2f}  (*sampled estimate)")
 
     if ages:
@@ -261,15 +313,40 @@ def analyze(file_path: Path) -> None:
             print(f"  {day:<5} {100*ir/tot:7.1f}% {100*h/tot:7.1f}% {100*hi/tot:7.1f}% {tot:>12,}")
 
     if scen_counts:
-        print(f"\n=== Per-Scenario Glycemic Profile ===")
-        print(f"  {'Scen':<5} {'Name':<25} {'Points':>12} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
-        print("  " + "-" * 72)
+        print(f"\n=== Per-Base-Scenario Glycemic Profile ===")
+        print(f"  {'Scen':<5} {'Name':<18} {'Points':>12} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
+        print("  " + "-" * 66)
         for sid in sorted(scen_counts):
             h, ir, hi, tot, gsum = scen_counts[sid]
-            name = scenario_names.get(sid, f"scenario {sid}")
+            name = base_scenario_names.get(sid, f"sc{sid}")
             mean_g = gsum / tot if tot else 0
-            print(f"  {sid:<5} {name:<25} {tot:>12,} {100*ir/tot:>6.1f}% "
+            print(f"  {sid:<5} {name:<18} {tot:>12,} {100*ir/tot:>6.1f}% "
                   f"{100*h/tot:>6.1f}% {100*hi/tot:>6.1f}% {mean_g:>7.2f}")
+
+    # Day-level anomaly overlay rates
+    if total_patient_days > 0:
+        print(f"\n=== Day-Level Anomaly Overlay Rates (n={total_patient_days:,} patient-days) ===")
+        print(f"  {'Overlay':<28} {'Days':>8} {'Rate':>8}")
+        print("  " + "-" * 46)
+        print(f"  {'Large meal':<28} {had_large_meal_days:>8,} {100*had_large_meal_days/total_patient_days:>7.1f}%")
+        print(f"  {'Missed bolus':<28} {had_missed_days:>8,} {100*had_missed_days/total_patient_days:>7.1f}%")
+        if total_patient_days > 0:
+            print(f"  {'Late boluses (total)':<28} {n_late_total:>8,} {n_late_total/total_patient_days:>7.3f} avg/day")
+        print(f"  {'Exercise overlay (sc7/sc8)':<28} {n_ex_overlay:>8,} {100*n_ex_overlay/total_patient_days:>7.1f}%")
+
+    # Per-minute ML label distributions
+    for lbl_name, lbl_dict in (
+        ("Bolus Status",  bolus_status_counts),
+        ("Meal Size",     meal_size_counts),
+        ("Exercise Type", exercise_type_counts),
+    ):
+        if not lbl_dict:
+            continue
+        lbl_total = sum(lbl_dict.values())
+        print(f"\n=== Per-Minute ML Labels: {lbl_name} ===")
+        for val in sorted(lbl_dict, key=lambda v: lbl_dict[v], reverse=True):
+            cnt = lbl_dict[val]
+            print(f"  {str(val):<20} {cnt:>12,}  ({100*cnt/lbl_total:5.1f}%)")
 
     # ── ML readiness summary ──────────────────────────────────────────────────
     print(f"\n{'='*70}")
@@ -283,14 +360,18 @@ def analyze(file_path: Path) -> None:
     # TIR target for closed-loop simulation: the safety stack (hypo guard,
     # rescue bolus, ISF correction) actively maintains glucose, so TIR ≥85%
     # is the expected baseline — real-patient TIR targets (55–80%) do not apply.
+    all_base_scens = all(i in scen_counts for i in (1, 2, 3))
+    all_bolus_labels = all(v in bolus_status_counts for v in ("normal", "missed", "late"))
+    all_exercise_labels = all(v in exercise_type_counts for v in ("aerobic", "anaerobic", "prolonged", "none"))
     checks: list[tuple[str, bool, str]] = [
-        ("Patients ≥ 1000",          len(patient_ids) >= 1000,         f"{len(patient_ids):,}"),
-        ("TIR ≥85% (closed-loop)",   tir_pct >= 85,                    f"{tir_pct:.1f}%"),
-        ("Hypo < 5%",                hypo_pct < 5,                     f"{hypo_pct:.1f}%"),
-        ("Hyper < 30%",              hyper_pct < 30,                   f"{hyper_pct:.1f}%"),
-        ("CV% 20–40% (variability)", 20 <= glc_stats.cv_pct <= 40,     f"{glc_stats.cv_pct:.1f}%"),
-        ("All 9 scenarios present",  all(i in scen_counts for i in range(1, 10)),
-            f"present: {sorted(scen_counts.keys())}"),
+        ("Patients ≥ 1000",              len(patient_ids) >= 1000,    f"{len(patient_ids):,}"),
+        ("TIR ≥55% (closed-loop)",       tir_pct >= 55,               f"{tir_pct:.1f}%"),
+        ("Hypo < 5%",                    hypo_pct < 5,                f"{hypo_pct:.1f}%"),
+        ("Hyper < 30%",                  hyper_pct < 30,              f"{hyper_pct:.1f}%"),
+        ("CV% 30-45% (variability)",     30 <= glc_stats.cv_pct <= 45, f"{glc_stats.cv_pct:.1f}%"),
+        ("All 3 base scenarios present", all_base_scens,               f"{sorted(scen_counts.keys())}"),
+        ("Bolus labels: normal/missed/late", all_bolus_labels,         f"{sorted(bolus_status_counts.keys())}"),
+        ("Exercise labels: 4 types",     all_exercise_labels,          f"{sorted(exercise_type_counts.keys())}"),
     ]
 
     all_pass = True

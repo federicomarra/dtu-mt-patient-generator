@@ -29,17 +29,17 @@ class SimulationConfig:
     # physiologically possible T1D range (DKA onset >600 mg/dL)
     instability_hyper_pct_threshold: float = 60.0
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
-    # Exercise days (scenarios 2, 7, 8, 9) use the _exercise variants because physiological
-    # hypo during/after vigorous exercise is expected and the rescue system handles it.
+    # Any day where an exercise session is scheduled (regardless of base_scenario) uses
+    # the _exercise variants because physiological hypo during/after vigorous exercise is
+    # expected and the rescue system handles it.
     #
-    # NOTE (thesis): When scenario 2 (active afternoon) is fixed for all simulated days,
-    # acceptance rates are significantly lower (~15-20%) than for mixed-scenario runs (~45%).
-    # This is expected and physiologically justified: running aerobic exercise every day for
-    # 3+ consecutive days with burn-in causes cumulative post-exercise insulin sensitivity
-    # elevation (ETH Z-state) that persistently lowers fasting glucose. Most virtual patients
-    # cannot sustain acceptable glycaemic control under this chronic load within the 15%
-    # per-day hypo threshold. This finding reflects a genuine limitation of fixed-exercise
-    # cohort generation and should be reported as such in validation experiments.
+    # NOTE (thesis): Under the stochastic exercise model, 'active' patients (base_scenario=2)
+    # exercise on P ∈ [0.55, 0.80] of days rather than every day.  This removes the
+    # chronic ETH Z-state buildup that caused ~15-20% acceptance rates under the old
+    # guaranteed-daily-exercise SC2 regime.  Acceptance rates should approach mixed-scenario
+    # levels (~45%) even when fixed_scenario=2.  The old finding (every-day aerobic = chronic
+    # Z-state hypo) remains physiologically valid and is now an emergent property for the
+    # unlucky tail of active patients with high exercise_daily_prob AND high intensity_bias.
     # Two-tier hypo rejection for non-exercise days (sc1,3,4,5,6):
     #   Tier 1 — per-day hard cap: reject immediately if any non-exercise day exceeds
     #     quality_max_hypo_pct_threshold (15%). A single terrible day at 15% TBR (216 min in
@@ -48,22 +48,32 @@ class SimulationConfig:
     #     15% on a non-exercise day indicate a fundamental dosing or sensitivity problem.
     #   Tier 2 — chronic pattern check: count non-exercise days that exceed
     #     quality_max_hypo_pct_soft_threshold (10%). Reject if more than
-    #     quality_max_hypo_bad_nonex_days (2) such days occur across the simulation. One or two
-    #     rough non-exercise days is physiologically realistic; three or more signals chronic
-    #     instability. The 10% soft threshold matches Battelino 2019's "attention needed" level.
-    # Exercise days (sc2,7,8,9) use quality_max_hypo_pct_exercise_threshold (17%) plus the
-    # spillover bonuses and do NOT count toward the non-exercise chronic-pattern check.
+    #     quality_max_hypo_bad_nonex_days (3) such days occur across the simulation. Up to two
+    #     rough non-exercise days is physiologically realistic for active patients (some follow
+    #     an exercise day with Z spillover); four or more signals chronic instability.
+    #     The 10% soft threshold matches Battelino 2019's "attention needed" level.
+    # Any day with a scheduled exercise session uses quality_max_hypo_pct_exercise_threshold
+    # (17%) plus the spillover bonuses and does NOT count toward the non-exercise
+    # chronic-pattern check.  Exercise days are determined by day_plan.is_exercise_day
+    # (exercise is not None), regardless of base_scenario.
     # Ordering coherence: exercise max (17–21% with spillover) > non-exercise hard cap (15%) ✓
     quality_max_hypo_pct_threshold: float = 15.0          # non-exercise per-day hard cap
     quality_max_hypo_pct_soft_threshold: float = 10.0     # counting threshold for chronic-pattern check
-    quality_max_hypo_bad_nonex_days: int = 2              # max allowed non-exercise days above soft threshold
+    quality_max_hypo_bad_nonex_days: int = 3              # max allowed non-exercise days above soft threshold
+    # Raised from 2→3: under the stochastic exercise model active patients have only ~2-3
+    # non-exercise days per 7-day run, and ~1-2 of those immediately follow an exercise day
+    # carrying Z spillover (~1.6 mmol/L overnight glucose drop for aerobic, ~2.3 for prolonged).
+    # A limit of 2 left almost no headroom for the active patient subgroup.
     quality_max_hypo_pct_exercise_threshold: float = 17.0
-    # Bonus added to the hypo threshold per exercise day found in the 2-day lookback window
-    # (scenarios 2,7,8,9). The Z state (post-exercise insulin sensitivity, tau_Z≈600 min)
-    # pre-loads at ~40% for 1 day prior and compounds further for 2 consecutive exercise days.
+    # Bonus added to the hypo threshold per exercise day found in the 2-day lookback window.
+    # The Z state (tau_Z≈600 min, Z_max=0.2) retains ~24% of Z_max at the start of the
+    # following calendar day (~9h post-session), causing an integrated ~1.6 mmol/L overnight
+    # glucose drop for aerobic and ~2.3 mmol/L for prolonged sessions.  The 2% bonus is now
+    # conservative (was calibrated at Z_max=0.4 where the overnight drop was ~5 mmol/L), but
+    # erring on the side of acceptance is correct.
     # Each exercise day in the [d-2, d-1] window contributes this bonus independently:
     #   non-ex→exercise→any:      base + 2%  (d-1 spillover)
-    #   exercise→non-ex→any:      base + 2%  (d-2 spillover; Z still ~9% after 2 days)
+    #   exercise→non-ex→any:      base + 2%  (d-2 spillover; Z ~0.5% of Z_max at 48h)
     #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
     #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0

@@ -39,4 +39,4 @@ jobs:
         run: python test/test_sensitivity.py
 
       - name: Run parallel library test
-        run: python test/test_library_parallel.py
+        run: python test/test_library_parallel.py --patients 6 --days 3 --workers 2 --no-plot

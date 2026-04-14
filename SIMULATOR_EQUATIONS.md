@@ -534,7 +534,7 @@ $$
 
 | Parameter | Symbol | Default | Meaning |
 | --- | --- | --- | --- |
-| `noise_std` | $\sigma$ | 0.10 mmol/L | Stationary std of correlated error |
+| `noise_std` | $\sigma$ | 0.33 mmol/L | Stationary std of correlated error |
 | `noise_autocorr` | $\phi$ | 0.70 | AR(1) autocorrelation coefficient |
 | `cgm_lag_alpha` | $\alpha_{lag}$ | 0.25 | CGM lag blend factor |
 
@@ -680,12 +680,12 @@ Stage 2 is evaluated on the **full multi-day trajectory as a single concatenated
 
 **Stage 3 — Quality (evaluated per recorded day independently):**
 
-Each day $d$ is classified as an exercise day if it has the SC2 base scenario or an exercise overlay (prolonged aerobic or anaerobic). A spillover bonus $\delta_{spillover}$ is added for each exercise day found in the **2-day lookback window** $\{d-2,\, d-1\}$:
+Each day $d$ is classified as an exercise day if `day_plan.is_exercise_day` is true (i.e., any exercise session was scheduled, regardless of base scenario or tendency). A spillover bonus $\delta_{spillover}$ is added for each exercise day found in the **2-day lookback window** $\{d-2,\, d-1\}$:
 
 $$
 \theta_{hypo,base}(d) =
 \begin{cases}
-\theta_{hypo,exercise} & \text{if day } d \text{ has exercise (SC2 base or exercise overlay)} \\
+\theta_{hypo,exercise} & \text{if day } d \text{ has any exercise session} \\
 \theta_{hypo,quality}  & \text{otherwise}
 \end{cases}
 $$
@@ -714,14 +714,14 @@ $$
 
 Stage 3 is evaluated **per recorded day independently**. A patient is rejected if **any single day** violates its threshold — good days cannot compensate for one bad day. This means a patient with consistently 71% hyper per day (which passes Stage 2 globally at 71% > 60% would still be caught there, but lower consistent values pass Stage 2) is rejected here because each day individually exceeds $\theta_{hyper,quality}=70\%$.
 
-The distinction between Stage 2 and Stage 3 hyper thresholds (60% vs 75%) is intentional: Stage 2 catches explosive global instability across the full horizon; Stage 3 enforces per-day clinical quality — a single catastrophic day cannot be diluted by good days.
+The distinction between Stage 2 and Stage 3 hyper thresholds (60% vs 70%) is intentional: Stage 2 catches explosive global instability across the full horizon; Stage 3 enforces per-day clinical quality — a single catastrophic day cannot be diluted by good days.
 
 **Two-tier hypo check (non-exercise days only):**
 
 Non-exercise days have a two-tier hypoglycaemia check:
 
 - **Tier 1 (hard cap):** if any non-exercise day exceeds $\theta_{hypo,quality}=15\%$, the patient is rejected immediately.
-- **Tier 2 (chronic pattern):** if a non-exercise day exceeds $\theta_{hypo,soft}=10\%$, a bad-day counter increments. If the counter exceeds $N_{bad}=2$ days, the patient is rejected. This catches patients with a persistent mild hypo pattern that individually stays below the hard cap but signals structural overinsulinisation.
+- **Tier 2 (chronic pattern):** if a non-exercise day exceeds $\theta_{hypo,soft}=10\%$, a bad-day counter increments. If the counter exceeds $N_{bad}=3$ days, the patient is rejected. This catches patients with a persistent mild hypo pattern that individually stays below the hard cap but signals structural overinsulinisation.
 
 Exercise days use only the single $\theta_{hypo,exercise}=17\%$ threshold (no soft tier), because exercise-induced hypoglycaemia is expected physiology rather than a structural model defect.
 
@@ -739,7 +739,7 @@ Stage 3 checks (hypo%, hyper%, $G_{floor}$) and the $G_{max,instability}$ hard c
 
 The $\%Hyper_{instability}$ check from Stage 2 is **not** fail-fast — it is a trajectory-wide average evaluated after all days complete. A single hyperglycaemic day can average out over N days and would be wrongly rejected early if checked incrementally.
 
-Default values: $\theta_{hypo,quality}=15\%$ (hard cap per non-exercise day), $\theta_{hypo,soft}=10\%$ (soft cap: reject if $>2$ non-exercise days exceed this), $\theta_{hypo,exercise}=17\%$, $\delta_{spillover}=2\%$ (applied per exercise day in the 2-day lookback), $\theta_{hyper,quality}=70\%$, $\theta_{hyper,instability}=60\%$, $G_{max,instability}=33.3$ mmol/L (600 mg/dL), $G_{floor}=2.0$ mmol/L (36 mg/dL). All thresholds are config-driven from `SimulationConfig`.
+Default values: $\theta_{hypo,quality}=15\%$ (hard cap per non-exercise day), $\theta_{hypo,soft}=10\%$ (soft cap: reject if $>3$ non-exercise days exceed this), $\theta_{hypo,exercise}=17\%$, $\delta_{spillover}=2\%$ (applied per exercise day in the 2-day lookback), $\theta_{hyper,quality}=70\%$, $\theta_{hyper,instability}=60\%$, $G_{max,instability}=33.3$ mmol/L (600 mg/dL), $G_{floor}=2.0$ mmol/L (36 mg/dL). All thresholds are config-driven from `SimulationConfig`.
 
 **Design note — floor applied to physiological glucose only, not to the CGM signal:**
 

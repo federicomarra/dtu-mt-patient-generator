@@ -44,7 +44,7 @@ This document describes the known limitations of the simulator and the boundarie
 
 **No VO2max or fitness stratification.** Exercise intensity is modelled as a single AC value; patient fitness level (VO2max) is not parameterised. Highly trained athletes would show different glucose-exercise coupling than deconditioned patients.
 
-**No on-exercise carbohydrate supplementation.** Real T1D patients often consume carbs during exercise to prevent hypoglycaemia. The simulator's hypo-rescue applies a fixed 15 g bolus at ≤3.9 mmol/L, which is a blunt approximation of the nuanced decisions real patients make around exercise nutrition.
+**No on-exercise carbohydrate supplementation.** Real T1D patients often consume carbs during exercise to prevent hypoglycaemia. The simulator's hypo-rescue applies a rule-based two-tier response (15 g at ≤3.9 mmol/L; 30 g at ≤3.0 mmol/L) with fixed cooldowns, which is a blunt approximation of the nuanced decisions real patients make around exercise nutrition.
 
 **Z-state soft ceiling.** The `eth_Z_max=0.2` cap on the post-exercise insulin sensitivity accumulator is an ad hoc stability fix introduced to prevent multi-day Z-buildup from causing runaway hypoglycaemia. This cap is not present in the original ETH model and lacks physiological justification; it is marked EXPERIMENTAL in the codebase.
 

@@ -71,11 +71,12 @@ Implemented in `src/input.py`.
 | Large meal | 9% | One main meal ×1.8–2.1 carbs, ×2 duration, 0.70–0.85 underest |
 | Missed bolus | 9% | One meal gets no insulin |
 | Late bolus | ~7% | 1–2 meals bolused 30–90 min post-meal |
-| Prolonged aerobic | ~4.8% (SC1 only) | 75–120 min aerobic session |
-| Anaerobic | ~4.8% (SC1 only) | 20–50 min HIIT/resistance, 6000–9000 AC (EXPERIMENTAL) |
+| Prolonged aerobic | driven by per-tendency EXERCISE_TYPE_PROBS | 75–120 min aerobic session |
+| Anaerobic | driven by per-tendency EXERCISE_TYPE_PROBS (EXPERIMENTAL) | 20–50 min HIIT/resistance, 6000–9000 AC |
 
-SC2 patients always have a standard aerobic session (30–60 min, 1200–2000 AC) every day.
-Exercise overlays are mutually exclusive (XOR) and only apply to SC1 days.
+SC2 (active) patients exercise on P ∈ [0.55, 0.80] of days (stochastic per patient, not 100% guaranteed daily).
+Exercise type is drawn from per-tendency probabilities: prolonged and anaerobic sessions can occur for any patient tendency (normal, active, sedentary), not exclusively SC1.
+Exercise overlays are mutually exclusive per day (at most one exercise session per day).
 
 ### Bolus timing distribution
 
@@ -105,7 +106,7 @@ Stages:
    - `max glucose > instability_max_glucose_mmol` (default 33.3 mmol/L / 600 mg/dL) — **fail-fast**: checked per day, aborts the loop immediately if any day exceeds the hard cap
    - `hyper% > instability_hyper_pct_threshold` (default 60%) — evaluated over the **full concatenated trajectory** after all days complete (cumulative average; cannot be checked per-day)
 3. Quality rejection — evaluated **per day** with **fail-fast**: the loop aborts on the first failing day
-   - exercise days (SC2 base or exercise overlay): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 17%)
+   - exercise days (any day where `day_plan.is_exercise_day` is true — any base scenario, any tendency): hypo% ≤ `quality_max_hypo_pct_exercise_threshold` (default 17%)
    - non-exercise days: hypo% ≤ `quality_max_hypo_pct_threshold` (default 15%) — hard cap
    - non-exercise days soft cap: hypo% ≤ 10%; if >2 days exceed this, patient rejected (chronic overinsulinisation check)
    - +`quality_max_hypo_pct_spillover_bonus` (2%) per exercise day in the **2-day lookback** window [d-2, d-1] — accounts for Z-state (τ_Z ≈ 600 min) compounding across consecutive exercise days

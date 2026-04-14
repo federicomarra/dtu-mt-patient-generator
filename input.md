@@ -38,9 +38,9 @@ The base scenario is a per-patient constant, determining the activity profile of
 
 | ID | Name | Core Feature |
 | ---- | ------ | ------------- |
-| SC1 | Normal activity | Typical active day; may receive exercise overlays |
-| SC2 | Active aerobic | Every day includes a moderate aerobic exercise session |
-| SC3 | Sedentary | Desk-bound day; minimal incidental movement |
+| SC1 | Normal activity | Mixed-activity patient; moderate daily-exercise probability |
+| SC2 | Active aerobic | High daily-exercise probability; predominantly aerobic |
+| SC3 | Sedentary | Low daily-exercise probability; minimal incidental movement |
 
 **Sampling weights** (drawn once per patient at cohort generation):
 
@@ -50,8 +50,15 @@ The base scenario is a per-patient constant, determining the activity profile of
 | SC2 active aerobic | 0.27 | 27% |
 | SC3 sedentary | 0.35 | 35% |
 
-SC2 patients always have exercise on every recorded day. SC1 patients receive exercise
-via overlays (see §2.2). SC3 patients never have planned exercise sessions.
+The base scenario maps to a continuous `exercise_daily_prob` range, sampled once per patient:
+
+| Tendency | `exercise_daily_prob` range |
+| --------- | --------------------------- |
+| SC3 sedentary | 0.03–0.10 |
+| SC1 normal | 0.20–0.45 |
+| SC2 active | 0.55–0.80 |
+
+Each day, whether exercise occurs is a Bernoulli draw using the patient's `exercise_daily_prob`. SC2 patients exercise on most days but not necessarily every day. SC3 patients rarely exercise. Exercise type is drawn from per-tendency type probabilities (`EXERCISE_TYPE_PROBS`); prolonged aerobic and anaerobic sessions can occur for any tendency, not just SC1.
 
 ### 2.2 Per-Day Overlays
 
@@ -65,12 +72,19 @@ late bolus).
 | Missed bolus | 9% | One meal receives no insulin |
 | Late bolus (1st event) | 6% | 1 meal bolused 30–90 min after meal start |
 | Late bolus (2nd event) | 15% conditional | A second meal is also late (given 1st was drawn) |
-| Prolonged aerobic (SC1 only) | 12.5% | Long aerobic session 75–120 min replaces incidental |
-| Anaerobic (SC1 only) | 12.5% | HIIT/resistance session 20–50 min |
 
-**Exercise overlays are mutually exclusive** — at most one exercise overlay fires per
-day (XOR constraint). If both are sampled, one is discarded. Exercise overlays are only
-applied to SC1 patients; SC2 always has standard aerobic, SC3 never has exercise.
+Exercise sessions (aerobic, prolonged aerobic, anaerobic) are not Bernoulli-overlay driven.
+They are scheduled from a per-tendency type distribution (`EXERCISE_TYPE_PROBS`) on days where
+the patient's daily exercise draw fires. Exercise and meal-perturbation overlays are independent
+and can co-occur. At most one exercise session per day (no stacking).
+
+**Exercise type probabilities by tendency:**
+
+| Tendency | aerobic | prolonged | anaerobic |
+| --------- | ------- | --------- | --------- |
+| SC3 sedentary | 80% | 10% | 10% |
+| SC1 normal | 70% | 15% | 15% |
+| SC2 active | 65% | 25% | 10% |
 
 **Missed bolus and late bolus constraints:**
 
@@ -83,8 +97,9 @@ applied to SC1 patients; SC2 always has standard aerobic, SC3 never has exercise
 - Large meal: ~9% of all days
 - Missed bolus: ~9% of all days
 - Late bolus: ~6% + tail from 2nd event ≈ ~6.9% of all days
-- Exercise overlay: (0.125 + 0.125) × 0.38 (SC1 fraction) ≈ 9.5% of all days
-- SC2 baseline aerobic: 27% of all days (every SC2 patient-day)
+- Exercise (any type): depends on patient tendency and `exercise_daily_prob`; roughly
+  0.38 × 0.33 + 0.27 × 0.68 + 0.35 × 0.07 ≈ ~35% of all days across a random-scenario cohort
+- Of exercise days: ~67–70% aerobic, ~12–25% prolonged, ~10–15% anaerobic (tendency-weighted)
 
 ---
 
@@ -244,20 +259,26 @@ peaked ~45–60 min post-meal — a distinguishable spike-then-correction CGM si
 
 ### 6.1 Which Days Have Exercise
 
-| Patient type | Exercise condition |
-| ------------- | ------------------- |
-| SC2 baseline | Every day; standard aerobic session |
-| SC1 + prolonged-aerobic overlay | That day only; 75–120 min aerobic |
-| SC1 + anaerobic overlay | That day only; 20–50 min HIIT/resistance |
-| SC3 | Never |
+Each day, whether a patient exercises is determined by a Bernoulli draw against their
+`exercise_daily_prob` (sampled once per patient from their tendency range). When exercise
+fires, the type is drawn from the per-tendency `EXERCISE_TYPE_PROBS` distribution:
+
+| Patient tendency | `exercise_daily_prob` | Exercise type draw |
+| ---------------- | --------------------- | -------------------|
+| SC3 sedentary | 0.03–0.10 | 80% aerobic / 10% prolonged / 10% anaerobic |
+| SC1 normal | 0.20–0.45 | 70% aerobic / 15% prolonged / 15% anaerobic |
+| SC2 active | 0.55–0.80 | 65% aerobic / 25% prolonged / 10% anaerobic |
+
+All exercise sessions are scheduled with `is_anomaly_overlay=False` for aerobic (SC2-like
+background activity) and `is_anomaly_overlay=True` for prolonged and anaerobic.
 
 ### 6.2 Exercise Parameters
 
-| Type | Trigger | Duration | AC range |
-| ------ | --------- | ---------- | ---------- |
-| Aerobic (SC2 base) | Every SC2 day | 30–60 min | 1200–2000 |
-| Prolonged aerobic (overlay) | SC1 days, P=12.5% | 75–120 min | 1500–2500 |
-| Anaerobic (overlay, EXPERIMENTAL) | SC1 days, P=12.5% | 20–50 min | 6000–9000 |
+| Type | Duration | AC range |
+| ------ | ---------- | ---------- |
+| Aerobic | 30–60 min | 1200–2000 |
+| Prolonged aerobic | 75–120 min | 1500–2500 |
+| Anaerobic (EXPERIMENTAL) | 20–50 min | 6000–9000 |
 
 Reference thresholds: `aAC=1000` → `fAC=0.5` (aerobic onset); `ah=5600` → `fHI=0.5`
 (anaerobic onset). The anaerobic overlay's AC range (6000–9000) keeps it firmly in the
@@ -352,20 +373,24 @@ For each simulated day for a given patient:
 
 ```text
 1. Load PatientProfile (cached per patient):
-   a. base_scenario ~ Categorical([0.38, 0.27, 0.35]) → SC1/SC2/SC3
+   a. exercise_tendency ~ Categorical([0.38, 0.27, 0.35]) → normal/active/sedentary
+      base_scenario exported as 1/2/3 for backward compat
    b. baseline_meal_count ~ Categorical([1/3, 1/3, 1/3]) → 3/4/5 meals
    c. bolus_bias ~ Uniform([0.78, 0.95])
+   d. exercise_daily_prob ~ Uniform(tendency range)  # P(exercise today)
+   e. exercise_intensity_bias ~ Uniform(tendency range)  # AC scale factor
 
 2. Generate DayPlan for this day:
    a. Sample meal count (20% chance ±1 deviation from baseline)
-   b. Sample overlays independently (Bernoulli):
+   b. Sample meal overlays independently (Bernoulli):
       - large_meal (P=0.09), missed_bolus (P=0.09)
       - late_bolus_1 (P=0.06), late_bolus_2 conditional (P=0.15)
-      - if SC1: prolonged_aerobic XOR anaerobic (P=0.125 each)
-   c. Place meals at anchor times + jitter
-   d. Apply anomaly modifiers (large-meal carb factor, missed/late bolus assignment)
-   e. Compute per-meal bolus_carbs = actual × bolus_bias × noise × underest
-   f. Schedule exercise session if applicable (SC2 every day; SC1 with overlay)
+   c. Sample exercise: Bernoulli(exercise_daily_prob); if fires, draw type from
+      EXERCISE_TYPE_PROBS[tendency] → aerobic / prolonged / anaerobic
+   d. Place meals at anchor times + jitter
+   e. Apply anomaly modifiers (large-meal carb factor, missed/late bolus assignment)
+   f. Compute per-meal bolus_carbs = actual × bolus_bias × noise × underest
+   g. Schedule exercise session in a valid time window (≥20 min from any meal)
 
 3. At each minute t:
    a. For active meals: compute u_inc (bolus insulin) and d_inc (carb absorption)

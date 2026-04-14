@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -14,12 +15,21 @@ from src.library_generation import generate_library_parallel
 from src.simulation_config import SimulationConfig
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Parallel library generation smoke test")
+    parser.add_argument("--patients", type=int, default=40, help="Number of patients to generate")
+    parser.add_argument("--days", type=int, default=14, help="Number of days per patient")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2), help="Number of worker processes")
+    parser.add_argument("--no-plot", action="store_true", help="Skip the post-generation plot")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    workers = max(1, (os.cpu_count() or 2) // 2)
+    args = _parse_args()
 
     config = SimulationConfig(
-        n_patients=40,
-        n_days=14,           # 2 weeks: gives sequence models a full baseline before anomaly days
+        n_patients=args.patients,
+        n_days=args.days,
         international_unit=True,
         noise_std=0.10,
         noise_autocorr=0.7,
@@ -32,7 +42,7 @@ if __name__ == "__main__":
 
     export_config = ExportConfig(export_to_parquet=True, export_to_csv=False)
     t0 = time.perf_counter()
-    folder = generate_library_parallel(config, export_config, workers=workers)
+    folder = generate_library_parallel(config, export_config, workers=args.workers)
     total_s = time.perf_counter() - t0
 
     mins, secs = divmod(int(total_s), 60)
@@ -41,6 +51,9 @@ if __name__ == "__main__":
     if folder is None:
         print("Generation failed, no plot.")
         sys.exit(1)
+
+    if args.no_plot:
+        sys.exit(0)
 
     # Load merged parquet and plot all patient BG trajectories
     parquet_files = list(folder.glob("*.parquet"))

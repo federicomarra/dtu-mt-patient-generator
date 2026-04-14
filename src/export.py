@@ -1,6 +1,7 @@
 # Export file functions
 
 # Library imports
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -255,6 +256,32 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
     return df
 
 
+def _validate_parquet_output(parquet_path: Path, expected_rows: int) -> None:
+    """Validate a parquet file footer and metadata after write."""
+    import pyarrow.parquet as pq
+
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"Parquet file was not created: {parquet_path}")
+    if parquet_path.stat().st_size == 0:
+        raise ValueError(f"Parquet file is empty: {parquet_path}")
+
+    # Quick footer guard: valid parquet files end with PAR1.
+    with parquet_path.open("rb") as fh:
+        fh.seek(-4, os.SEEK_END)
+        footer = fh.read(4)
+    if footer != b"PAR1":
+        raise ValueError(
+            f"Parquet footer marker missing for {parquet_path}; file may be truncated"
+        )
+
+    metadata = pq.read_metadata(parquet_path)
+    if metadata.num_rows != expected_rows:
+        raise ValueError(
+            f"Parquet row mismatch for {parquet_path}: "
+            f"expected {expected_rows}, got {metadata.num_rows}"
+        )
+
+
 # Export functions
 def export_to_formats(
     results_dict: object,
@@ -313,19 +340,32 @@ def export_to_formats(
     base_file_name = f"results_{n_patients}p_{n_days}d"
     parquet_path = output_path / f"{base_file_name}.parquet"
     csv_path = output_path / f"{base_file_name}.csv"
+    parquet_tmp = output_path / f"{base_file_name}.parquet.tmp"
+    csv_tmp = output_path / f"{base_file_name}.csv.tmp"
     
     # Export to Parquet
     if export_parquet:
+        if parquet_tmp.exists():
+            parquet_tmp.unlink()
         try:
-            df.to_parquet(parquet_path, index=False)
+            df.to_parquet(parquet_tmp, index=False)
+            _validate_parquet_output(parquet_tmp, expected_rows=len(df))
+            parquet_tmp.replace(parquet_path)
             print(f"Data successfully exported in parquet format to {parquet_path}")
         except Exception as e:
-            print(f"An error occurred while exporting to Parquet: {e}")
+            if parquet_tmp.exists():
+                parquet_tmp.unlink()
+            raise RuntimeError(f"Parquet export failed: {e}") from e
 
     # Export to CSV
     if export_csv:
+        if csv_tmp.exists():
+            csv_tmp.unlink()
         try:
-            df.to_csv(csv_path, index=False)
+            df.to_csv(csv_tmp, index=False)
+            if csv_tmp.stat().st_size == 0:
+                raise ValueError(f"CSV file is empty: {csv_tmp}")
+            csv_tmp.replace(csv_path)
             print(f"Data successfully exported in csv format to {csv_path}")
             
             # Write config metadata to separate file if provided
@@ -340,4 +380,6 @@ def export_to_formats(
                 except Exception as meta_e:
                     print(f"Warning: Failed to write config metadata: {meta_e}")
         except Exception as e:
-            print(f"An error occurred while exporting to CSV: {e}")
+            if csv_tmp.exists():
+                csv_tmp.unlink()
+            raise RuntimeError(f"CSV export failed: {e}") from e

@@ -18,9 +18,36 @@ def time_to_minutes(h: int, m: int) -> int:
 # Patient-Level Scenario Probabilities
 # ============================================================================
 
-# Base scenario weights — sampled ONCE per patient; determines daily activity type.
-# sc1 (normal): 0.38, sc2 (active aerobic): 0.27, sc3 (sedentary): 0.35
-BASE_SCENARIO_WEIGHTS: list[float] = [0.38, 0.27, 0.35]
+# Exercise tendency distribution — sampled ONCE per patient at profile creation.
+# Maps onto the old SC1/SC2/SC3 archetypes but drives a continuous daily probability
+# rather than a deterministic 100%-exercise-every-day for active patients.
+# Indices: 0=normal, 1=active, 2=sedentary  (preserved as base_scenario 1/2/3 for export)
+EXERCISE_TENDENCY_WEIGHTS: list[float] = [0.38, 0.27, 0.35]  # normal / active / sedentary
+EXERCISE_TENDENCY_LABELS:  list[str]   = ['normal', 'active', 'sedentary']
+
+# Per-tendency daily exercise probability ranges [min, max].
+# Active patients exercise most days but not every day — more realistic than the old SC2
+# guarantee of 100% daily exercise.
+EXERCISE_DAILY_PROB: dict[str, tuple[float, float]] = {
+    'sedentary': (0.03, 0.10),
+    'normal':    (0.20, 0.45),
+    'active':    (0.55, 0.80),   # was 1.0 for SC2 — now stochastic
+}
+
+# Per-tendency exercise type probability distribution.
+EXERCISE_TYPE_PROBS: dict[str, dict[str, float]] = {
+    'sedentary': {'aerobic': 0.80, 'prolonged': 0.10, 'anaerobic': 0.10},
+    'normal':    {'aerobic': 0.70, 'prolonged': 0.15, 'anaerobic': 0.15},
+    'active':    {'aerobic': 0.65, 'prolonged': 0.25, 'anaerobic': 0.10},
+}
+
+# Per-tendency intensity bias range; active patients push harder so their AC ranges
+# are scaled up from the base constants.
+EXERCISE_INTENSITY_BIAS: dict[str, tuple[float, float]] = {
+    'sedentary': (0.70, 0.90),
+    'normal':    (0.85, 1.10),
+    'active':    (1.00, 1.25),
+}
 
 # Baseline meal count: equal thirds across the cohort.
 MEAL_COUNT_PROBS: list[float] = [1/3, 1/3, 1/3]  # 3, 4, or 5 meals
@@ -37,8 +64,9 @@ MEAL_COUNT_DEVIATION_PROB: float = 0.20
 #   sc4: 9% of all days → large meal (restaurant/event dining)
 #   sc5: 6% of all days → missed bolus
 #   sc6: 6% of all days → late bolus (primary event)
-#   sc7: 4.5% of all days (= 0.125 × 0.38 sc1 days) → prolonged aerobic
-#   sc8: 4.5% of all days (= 0.125 × 0.38 sc1 days) → anaerobic
+# Exercise overlays (sc7/sc8) are now driven by EXERCISE_TYPE_PROBS above,
+# not per-day Bernoulli draws; P_PROLONGED_AEROBIC_GIVEN_SC1 / P_ANAEROBIC_GIVEN_SC1
+# are no longer used.
 
 P_LARGE_MEAL:   float = 0.09  # large-meal event (restaurant, party, event dining, etc.)
 P_MISSED_BOLUS: float = 0.09  # raised from 0.06: primary lever for physiological CV (each missed bolus adds a clean 2–4h excursion to 12–16 mmol/L, increasing population std without causing chronic hyperglycemia)
@@ -46,12 +74,6 @@ P_LATE_BOLUS:   float = 0.06
 # Conditional probability of a 2nd late-bolus event given one was already sampled.
 # Inflates the sc6 daily marginal slightly above 0.06 (to ~0.069); documented in thesis.
 P_LATE_BOLUS_SECOND: float = 0.15
-
-# Exercise overlays: conditional on base_scenario == sc1.
-# Bumped slightly above 0.045/0.38 = 0.1184 to compensate for the XOR constraint
-# (at most one exercise overlay per day) and occasional no-room fallbacks.
-P_PROLONGED_AEROBIC_GIVEN_SC1: float = 0.125   # sc7
-P_ANAEROBIC_GIVEN_SC1:         float = 0.125   # sc8
 
 
 # ============================================================================
@@ -238,8 +260,12 @@ class PatientProfile:
     """Fixed per-patient characteristics sampled once at cohort creation."""
     baseline_meal_count: int           # 3, 4, or 5
     baseline_snack_choice: Optional[int]  # 2 (morning) or 4 (afternoon) if count=4; None otherwise
-    base_scenario: int                 # 1 (normal activity), 2 (active aerobic), 3 (sedentary)
+    base_scenario: int                 # 1 (normal activity), 2 (active aerobic), 3 (sedentary) — kept for export compat
     bolus_bias: float                  # persistent carb-estimation multiplier [0.78–0.95]
+    # Continuous exercise traits replace the old deterministic SC2 guarantee
+    exercise_tendency: str             # 'sedentary' | 'normal' | 'active'
+    exercise_daily_prob: float         # P(exercise today) ∈ [0.03, 0.80]; sampled once per patient
+    exercise_intensity_bias: float     # multiplier on AC range [0.70, 1.25]
 
 
 @dataclass
@@ -281,10 +307,12 @@ class DayPlan:
     had_missed_bolus: bool
     n_late_boluses: int
     exercise_overlay: Optional[int]  # 7 (prolonged aerobic), 8 (anaerobic), or None
+    # Note: aerobic exercise (normal or sedentary-anomaly) always maps to None here —
+    # distinguish via exercise.exercise_type + exercise.is_anomaly_overlay if needed.
 
     @property
     def is_exercise_day(self) -> bool:
-        """True if any exercise session occurs today (sc2 baseline or anomaly overlay)."""
+        """True if any exercise session occurs today (any tendency, any type)."""
         return self.exercise is not None
 
 
@@ -385,7 +413,8 @@ def _generate_patient_profile(
     """Sample per-patient fixed characteristics.
 
     base_scenario_override: when config.random_scenarios=False, forces all
-        patients to this base scenario (1–3).
+        patients to this base scenario (1–3), mapped to the corresponding
+        exercise tendency for backwards compatibility.
     """
     rng = _seeded_rng(seed, patient_id, _PROFILE_STREAM_OFFSET)
 
@@ -398,11 +427,24 @@ def _generate_patient_profile(
     else:
         baseline_snack_choice = None
 
-    # Base scenario for all days (can be overridden globally)
+    # Exercise tendency — replaces hard SC1/SC2/SC3 for exercise logic.
+    # base_scenario is preserved (1=normal, 2=active, 3=sedentary) for export compat.
     if base_scenario_override is not None:
         base_scenario = max(1, min(3, int(base_scenario_override)))
+        tendency_map = {1: 'normal', 2: 'active', 3: 'sedentary'}
+        exercise_tendency = tendency_map[base_scenario]
     else:
-        base_scenario = int(rng.choice([1, 2, 3], p=BASE_SCENARIO_WEIGHTS))
+        tendency_idx = int(rng.choice(3, p=EXERCISE_TENDENCY_WEIGHTS))
+        exercise_tendency = EXERCISE_TENDENCY_LABELS[tendency_idx]
+        base_scenario = tendency_idx + 1  # 0→1 (normal), 1→2 (active), 2→3 (sedentary)
+
+    # Per-patient daily exercise probability drawn from the tendency's range
+    p_lo, p_hi = EXERCISE_DAILY_PROB[exercise_tendency]
+    exercise_daily_prob = float(rng.uniform(p_lo, p_hi))
+
+    # Per-patient intensity bias drawn from the tendency's range
+    i_lo, i_hi = EXERCISE_INTENSITY_BIAS[exercise_tendency]
+    exercise_intensity_bias = float(rng.uniform(i_lo, i_hi))
 
     # Stable per-patient bolus estimation bias [0.78–0.95]
     bolus_bias = float(rng.uniform(_PATIENT_BOLUS_BIAS_MIN, _PATIENT_BOLUS_BIAS_MAX))
@@ -412,6 +454,9 @@ def _generate_patient_profile(
         baseline_snack_choice=baseline_snack_choice,
         base_scenario=base_scenario,
         bolus_bias=bolus_bias,
+        exercise_tendency=exercise_tendency,
+        exercise_daily_prob=exercise_daily_prob,
+        exercise_intensity_bias=exercise_intensity_bias,
     )
 
 
@@ -508,18 +553,40 @@ def _sample_meal_anomalies(
     return assignment
 
 
-def _sample_exercise_anomaly(rng: np.random.Generator) -> Optional[int]:
-    """Sample exercise overlay type for sc1 days (at most one per day).
+def _sample_exercise_for_day(
+    rng: np.random.Generator,
+    profile: PatientProfile,
+) -> tuple[Optional[str], bool]:
+    """Sample exercise type and anomaly flag for one day.
 
-    Returns 7 (prolonged aerobic), 8 (anaerobic), or None.
-    Uses a single uniform draw so sc7 and sc8 are mutually exclusive.
+    Returns (exercise_type, is_anomaly_overlay) or (None, False).
+
+    All tendencies go through the same probabilistic path — there is no
+    guaranteed daily exercise even for 'active' patients (replaces SC2 hardcode).
+
+    Anomaly flag rules:
+      - 'prolonged' and 'anaerobic' are always anomalies (out-of-routine sessions)
+      - 'aerobic' is normal for active/normal patients; anomaly for sedentary
+        (unexpected structured exercise for an otherwise sedentary patient)
     """
-    r = float(rng.random())
-    if r < P_PROLONGED_AEROBIC_GIVEN_SC1:
-        return 7
-    if r < P_PROLONGED_AEROBIC_GIVEN_SC1 + P_ANAEROBIC_GIVEN_SC1:
-        return 8
-    return None
+    # First: does exercise happen today at all?
+    if float(rng.random()) >= profile.exercise_daily_prob:
+        return None, False
+
+    # Sample exercise type from tendency-specific distribution
+    type_probs = EXERCISE_TYPE_PROBS[profile.exercise_tendency]
+    ex_types   = list(type_probs.keys())
+    ex_weights = [type_probs[t] for t in ex_types]
+    ex_type    = str(rng.choice(ex_types, p=ex_weights))
+
+    if ex_type in ('prolonged', 'anaerobic'):
+        is_anomaly = True
+    elif profile.exercise_tendency == 'sedentary':
+        is_anomaly = True   # unexpected structured exercise for sedentary patient
+    else:
+        is_anomaly = False
+
+    return ex_type, is_anomaly
 
 
 def _build_meal_events(
@@ -613,47 +680,35 @@ def _build_meal_events(
 
 def _build_exercise_event(
     rng: np.random.Generator,
-    base_scenario: int,
+    profile: PatientProfile,
     meals: list[MealEvent],
-    exercise_overlay: Optional[int],
+    ex_type: Optional[str],
+    is_anomaly: bool,
 ) -> Optional[ExerciseEvent]:
     """Build an exercise session respecting meal-gap and dinner-cutoff constraints.
 
-    Cases:
-      sc3 → no exercise.
-      sc1 + no overlay → no exercise.
-      sc2 → aerobic session (is_anomaly_overlay=False); duration 30–60 min.
-      sc1 + overlay=7 → prolonged aerobic (is_anomaly_overlay=True); 75–120 min.
-      sc1 + overlay=8 → anaerobic (is_anomaly_overlay=True); 20–50 min.
+    ex_type / is_anomaly come from _sample_exercise_for_day; None → no session.
 
     Placement: free windows in [EARLIEST_EXERCISE_TIME, dinner−20] avoiding
     meal ±20 min buffers.  Falls back to minimum duration; returns None if no
     room is available (rare, occurs <1% of days).
     """
-    if base_scenario == 3:
+    if ex_type is None:
         return None
-    if base_scenario == 1 and exercise_overlay is None:
-        return None
-
-    # Determine exercise type and parameters
-    if base_scenario == 2:
-        ex_type, is_overlay = 'aerobic', False
-    elif exercise_overlay == 7:
-        ex_type, is_overlay = 'prolonged', True
-    else:
-        ex_type, is_overlay = 'anaerobic', True
 
     dur_lo, dur_hi = _EXERCISE_DURATION[ex_type]
     duration = int(rng.integers(dur_lo, dur_hi + 1))
 
+    # Apply patient-specific intensity bias to AC ranges
+    bias = profile.exercise_intensity_bias
     if ex_type == 'aerobic':
-        ac_counts = float(rng.uniform(_AC_AEROBIC_MIN, _AC_AEROBIC_MAX))
+        ac_counts = float(rng.uniform(_AC_AEROBIC_MIN * bias, _AC_AEROBIC_MAX * bias))
         burst_period, burst_on, burst_mult = 1, 1, 1.0
     elif ex_type == 'prolonged':
-        ac_counts = float(rng.uniform(_AC_PROLONGED_MIN, _AC_PROLONGED_MAX))
+        ac_counts = float(rng.uniform(_AC_PROLONGED_MIN * bias, _AC_PROLONGED_MAX * bias))
         burst_period, burst_on, burst_mult = 1, 1, 1.0
     else:  # anaerobic: periodic high-intensity intervals, 2 min on / 3 min rest
-        ac_counts = float(rng.uniform(_AC_ANAEROBIC_MIN, _AC_ANAEROBIC_MAX))
+        ac_counts = float(rng.uniform(_AC_ANAEROBIC_MIN * bias, _AC_ANAEROBIC_MAX * bias))
         burst_period, burst_on, burst_mult = 5, 2, 1.5
 
     # Dinner time establishes the exercise cutoff (no exercise in the pre-dinner window)
@@ -689,7 +744,7 @@ def _build_exercise_event(
         start_min=start,
         duration_min=duration,
         exercise_type=ex_type,
-        is_anomaly_overlay=is_overlay,
+        is_anomaly_overlay=is_anomaly,
         ac_counts=ac_counts,
         burst_period_min=burst_period,
         burst_on_min=burst_on,
@@ -707,7 +762,7 @@ def _generate_day_plan(
 
     Two separate RNG streams maintain reproducibility:
       - meal_rng (_DAY_PLAN_STREAM_OFFSET): meal count, slot selection, anomaly
-        sampling, and meal event building.
+        sampling, exercise type draw, and meal event building.
       - ex_rng (_EXERCISE_STREAM_OFFSET): exercise placement and AC sampling.
     """
     meal_rng = _seeded_rng(seed, patient_id, _DAY_PLAN_STREAM_OFFSET, day)
@@ -722,14 +777,22 @@ def _generate_day_plan(
     # 3. Meal anomaly overlays (restaurant, missed bolus, late bolus)
     anomalies = _sample_meal_anomalies(meal_rng, active_slots)
 
-    # 4. Exercise overlay (sc1 base only; XOR: at most one type per day)
-    exercise_overlay = _sample_exercise_anomaly(meal_rng) if profile.base_scenario == 1 else None
+    # 4. Unified exercise sampling — all tendencies now go through the same
+    #    probabilistic path; no more hard SC2 guarantee of daily exercise.
+    ex_type, is_anomaly = _sample_exercise_for_day(meal_rng, profile)
 
     # 5. Build meal events with carbs, timing, bolus estimation, and anomaly flags
     meals = _build_meal_events(meal_rng, active_slots, meal_count, anomalies, profile.bolus_bias)
 
     # 6. Build exercise event (uses dedicated ex_rng to decouple from meal draws)
-    exercise = _build_exercise_event(ex_rng, profile.base_scenario, meals, exercise_overlay)
+    exercise = _build_exercise_event(ex_rng, profile, meals, ex_type, is_anomaly)
+
+    # Map ex_type back to the legacy overlay integer for export compatibility
+    exercise_overlay: Optional[int] = None
+    if is_anomaly and ex_type == 'prolonged':
+        exercise_overlay = 7
+    elif is_anomaly and ex_type == 'anaerobic':
+        exercise_overlay = 8
 
     return DayPlan(
         base_scenario=profile.base_scenario,

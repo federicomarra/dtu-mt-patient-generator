@@ -352,6 +352,7 @@ def run_simulation(
                 n_measurements = len(t_eval_day)
                 day_insulin = np.full(n_measurements, np.nan, dtype=np.float64)
                 day_cho = np.full(n_measurements, np.nan, dtype=np.float64)
+                day_ac = np.full(n_measurements, np.nan, dtype=np.float64)
             
                 # Define ODE function with patient-specific parameters
                 # NOTE: Using scenario_with_cached_meals for deterministic meal scheduling
@@ -391,6 +392,7 @@ def run_simulation(
                     if 0 <= minute_idx < n_measurements:
                         day_insulin[minute_idx] = float(u_applied)
                         day_cho[minute_idx] = float(d_applied)
+                        day_ac[minute_idx] = float(activity_applied)
 
                     result = hovorka_equations(
                         int(t),
@@ -464,6 +466,8 @@ def run_simulation(
                         day_insulin[idx] = day_insulin[idx - 1] if idx > 0 else basal_fallback
                     if np.isnan(day_cho[idx]):
                         day_cho[idx] = day_cho[idx - 1] if idx > 0 else 0.0
+                    if np.isnan(day_ac[idx]):
+                        day_ac[idx] = day_ac[idx - 1] if idx > 0 else 0.0
             
                 # Apply lagged CGM sensor model point-by-point.
                 # Each call to measure_glycemia (mode="lagged") applies:
@@ -527,6 +531,7 @@ def run_simulation(
                     "blood_glucose": glycemia_day_array,
                     "insulin_mU_min": day_insulin,
                     "cho_mg_min": day_cho,
+                    "ac_counts": day_ac,
                     "base_scenario": day_plan.base_scenario if day_plan else 1,
                     "had_large_meal": day_plan.had_large_meal if day_plan else False,
                     "had_missed_bolus": day_plan.had_missed_bolus if day_plan else False,

@@ -130,6 +130,10 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     values.get("cho_mg_min", values.get("cho", [])),
                     dtype=np.float64,
                 )
+                ac_arr = np.asarray(
+                    values.get("ac_counts", []),
+                    dtype=np.float64,
+                )
                 # Deprecated scalar labels — kept for backward compat with analysis scripts.
                 scenario_id = values.get("scenario_id", None)  # type: ignore[assignment]
                 missed_meal_id = values.get("missed_meal_id", None)  # type: ignore[assignment]
@@ -150,6 +154,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 values_arr = np.asarray(values, dtype=np.float64)
                 insulin_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
                 cho_arr = np.full(values_arr.size, np.nan, dtype=np.float64)
+                ac_arr = np.full(values_arr.size, 0.0, dtype=np.float64)
                 scenario_id = None
                 missed_meal_id = None
                 late_bolus_id = None
@@ -181,6 +186,13 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     cho_aligned[:common] = cho_arr[:common]
                 cho_arr = cho_aligned
 
+            if ac_arr.size != values_arr.size:
+                ac_aligned = np.full(values_arr.size, 0.0, dtype=np.float64)
+                common = min(ac_arr.size, values_arr.size)
+                if common > 0:
+                    ac_aligned[:common] = ac_arr[:common]
+                ac_arr = ac_aligned
+
             day_int = int(day)
             minutes = np.arange(values_arr.size, dtype=int)
             absolute_minutes = (day_int * 1440) + minutes
@@ -202,6 +214,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "blood_glucose": values_arr.astype(float),
                 "cho_mg_min": cho_arr.astype(float),
                 "insulin_mU_min": insulin_arr.astype(float),
+                "ac_counts": ac_arr.astype(float),
                 # Day-level scenario metadata (scalar broadcast to all rows).
                 "base_scenario": base_scenario_val,
                 "had_large_meal": had_large_meal_val,

@@ -175,14 +175,8 @@ _LATE_BOLUS_DELAY_MAX: int = 90
 # Per-meal bolus lead-time distribution.
 # Positive = pre-meal, 0 = at meal onset, negative = post-meal bolus delivery.
 # Empirical T1D breakdown: ~60% pre-meal, ~25% at onset, ~15% post-meal.
-_BOLUS_LEAD_PRE_MIN: int  = 5
+_BOLUS_LEAD_PRE_MIN: int  = 10   # simplified: normal bolus is always pre-meal
 _BOLUS_LEAD_PRE_MAX: int  = 20
-_BOLUS_LEAD_AT_MIN: int   = 0
-_BOLUS_LEAD_AT_MAX: int   = 4
-_BOLUS_LEAD_POST_MIN: int = -20   # negative → bolus N min after meal starts
-_BOLUS_LEAD_POST_MAX: int = -1
-_BOLUS_LEAD_PRE_PROB: float  = 0.60
-_BOLUS_LEAD_AT_PROB: float   = 0.25
 # post-meal probability is implicitly 1 − 0.60 − 0.25 = 0.15
 
 
@@ -354,18 +348,12 @@ def _seeded_rng(
 
 
 def _sample_bolus_lead(rng: np.random.Generator) -> int:
-    """Draw per-meal bolus lead time from a realistic T1D timing distribution.
+    """Normal bolus is always pre-meal: 10-20 min before meal start.
 
-    Returns minutes before meal start (positive = pre-meal, negative = post-meal).
-    Uses exactly 2 RNG draws (category + value).
+    Uses exactly 2 RNG draws to preserve the 10-draw per-slot budget.
     """
-    r = float(rng.random())
-    if r < _BOLUS_LEAD_PRE_PROB:
-        return int(rng.integers(_BOLUS_LEAD_PRE_MIN, _BOLUS_LEAD_PRE_MAX + 1))
-    elif r < _BOLUS_LEAD_PRE_PROB + _BOLUS_LEAD_AT_PROB:
-        return int(rng.integers(_BOLUS_LEAD_AT_MIN, _BOLUS_LEAD_AT_MAX + 1))
-    else:
-        return int(rng.integers(_BOLUS_LEAD_POST_MIN, _BOLUS_LEAD_POST_MAX + 1))
+    rng.random()  # budget draw (was: category selector — kept for RNG consistency)
+    return int(rng.integers(_BOLUS_LEAD_PRE_MIN, _BOLUS_LEAD_PRE_MAX + 1))
 
 
 def _compute_free_windows(
@@ -986,6 +974,37 @@ def compute_day_labels(
                 exercise_type_arr[t] = ex.exercise_type
 
     return bolus_status_arr, meal_size_arr, exercise_type_arr
+
+
+def compute_cho_announcement(
+    day_plan: DayPlan,
+    n_minutes: int = 1441,
+) -> np.ndarray:
+    """Per-minute announced carbohydrate signal [mg/min].
+
+    Models what a real CGM dataset carries: carbs logged when the bolus is given,
+    not the physiological absorption curve.
+
+    - Normal bolus: bolus_carbs spread over meal.duration starting at bolus_start
+      (= meal.time_min - bolus_lead_min, which is 10-20 min before the meal).
+    - Late bolus:   same spread, but starting at meal.time_min + late_bolus_delay_min.
+    - Missed bolus: zero (no bolus was given → no carb log entry).
+    - Large meal:   bolus_carbs already reflects underestimated portion size.
+    """
+    arr = np.zeros(n_minutes, dtype=np.float64)
+    for meal in day_plan.meals:
+        if meal.bolus_status == 'missed' or meal.bolus_carbs <= 0:
+            continue  # no announcement
+        if meal.bolus_status == 'late':
+            bolus_start = meal.time_min + meal.late_bolus_delay_min
+        else:
+            bolus_start = meal.time_min - meal.bolus_lead_min
+        duration = max(1, meal.duration)
+        rate = meal.bolus_carbs * 1000.0 / duration  # mg/min (matches cho_mg_min units)
+        t_start = max(0, bolus_start)
+        t_end   = min(n_minutes, bolus_start + duration)
+        arr[t_start:t_end] += rate
+    return arr
 
 
 # ============================================================================

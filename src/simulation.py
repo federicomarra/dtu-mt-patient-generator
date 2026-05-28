@@ -12,7 +12,7 @@ from tqdm import tqdm
 # --- Imports from src ---
 from src.model import hovorka_equations, compute_optimal_steady_state_from_glucose, ParameterSet
 from src.parameters import generate_monte_carlo_patients
-from src.input import scenario_with_cached_meals, get_cached_day_plan, compute_day_labels, clear_meal_cache
+from src.input import scenario_with_cached_meals, get_cached_day_plan, compute_day_labels, compute_cho_announcement, clear_meal_cache
 from src.export import export_to_formats, ExportConfig
 from src.sensitivity import find_icr, find_isf
 from src.simulation_config import SimulationConfig
@@ -35,7 +35,8 @@ from src.simulation_utils import (
 class DayResult(TypedDict):
     blood_glucose: np.ndarray
     insulin_mU_min: np.ndarray
-    cho_mg_min: np.ndarray
+    cho_mg_min: np.ndarray        # physiological absorption curve (actual carbs, meal-timed)
+    cho_mg_announced: np.ndarray  # bolus-announcement curve (bolus_carbs, bolus-timed; 0 if missed)
     # Per-day metadata
     base_scenario: int          # 1 (normal), 2 (active aerobic), 3 (sedentary)
     had_large_meal: bool  # True if a large-meal event (restaurant/party) occurred today
@@ -518,6 +519,12 @@ def run_simulation(
                     if day_plan is not None
                     else ([None] * n_measurements, [None] * n_measurements, ['none'] * n_measurements)
                 )
+                # Bolus-announcement carb curve: bolus_carbs at bolus delivery time, 0 if missed
+                _cho_announced = (
+                    compute_cho_announcement(day_plan, n_measurements)
+                    if day_plan is not None
+                    else np.zeros(n_measurements, dtype=np.float64)
+                )
                 # Deprecated scalar labels for backward compat with analysis scripts
                 _missed_slots: list[int] = sorted(
                     [m.slot for m in day_plan.meals if m.bolus_status == 'missed']
@@ -531,6 +538,7 @@ def run_simulation(
                     "blood_glucose": glycemia_day_array,
                     "insulin_mU_min": day_insulin,
                     "cho_mg_min": day_cho,
+                    "cho_mg_announced": _cho_announced,
                     "ac_counts": day_ac,
                     "base_scenario": day_plan.base_scenario if day_plan else 1,
                     "had_large_meal": day_plan.had_large_meal if day_plan else False,

@@ -205,16 +205,25 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     cho_ann_aligned[:common] = cho_announced_arr[:common]
                 cho_announced_arr = cho_ann_aligned
 
+            # Each day is simulated with np.arange(0, 1441) = 1441 points.
+            # Minute 1440 duplicates the first row of the next day — drop it here
+            # so downstream tools never see boundary rows.
+            n_rows = min(values_arr.size, 1440)
+            values_arr        = values_arr[:n_rows]
+            insulin_arr       = insulin_arr[:n_rows]
+            cho_arr           = cho_arr[:n_rows]
+            cho_announced_arr = cho_announced_arr[:n_rows]
+            ac_arr            = ac_arr[:n_rows]
+
             day_int = int(day)
-            minutes = np.arange(values_arr.size, dtype=int)
+            minutes = np.arange(n_rows, dtype=int)
             absolute_minutes = (day_int * 1440) + minutes
             times = _minutes_to_clock_strings(absolute_minutes)
 
-            # Align per-minute ML label arrays to glucose length (pad with None/'none').
-            n = values_arr.size
-            bolus_status_col = _align_label_list(_bolus_status_raw, None, n)
-            meal_size_col = _align_label_list(_meal_size_raw, None, n)
-            exercise_type_col = _align_label_list(_exercise_type_raw, "none", n)
+            # Align per-minute ML label arrays to n_rows (pad with None/'none', trim boundary).
+            bolus_status_col = _align_label_list(_bolus_status_raw, None, n_rows)
+            meal_size_col = _align_label_list(_meal_size_raw, None, n_rows)
+            exercise_type_col = _align_label_list(_exercise_type_raw, "none", n_rows)
 
             blocks.append(pd.DataFrame({
                 "patient_id": p_id_str,
@@ -242,7 +251,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "scenario_id": scenario_id,
                 "missed_meal_id": missed_meal_id,
                 "late_bolus_id": late_bolus_id,
-                "late_bolus_ids": [late_bolus_ids_val] * n,
+                "late_bolus_ids": [late_bolus_ids_val] * n_rows,
             }))
 
     if not blocks:

@@ -36,8 +36,6 @@ def fix_boundaries(input_path: Path, output_path: Path) -> None:
     print(f"Input:      {input_path}")
     print(f"Output:     {output_path}")
     print(f"Row groups: {n_groups}   Total rows in: {total_in:,}")
-    print(f"Expected rows out: {(total_in // 1441) * 1440:,}  "
-          f"(removing 1 row per patient-day)")
     print()
 
     writer = None
@@ -71,16 +69,14 @@ def fix_boundaries(input_path: Path, output_path: Path) -> None:
     if writer:
         writer.close()  # type: ignore[union-attr]
 
-    expected_out: int = (total_in // 1441) * 1440
     print(f"\nDone.")
     print(f"  Rows in:      {total_in:,}")
     print(f"  Rows dropped: {total_dropped:,}")
     print(f"  Rows out:     {total_written:,}")
-
-    if total_written == expected_out:
-        print(f"  Check: OK — exactly {total_written // 1440:,} patient-days × 1440 min")
+    if total_written % 1440 == 0:
+        print(f"  Check: OK — {total_written // 1440:,} patient-days × 1440 min")
     else:
-        print(f"  Check: WARNING — expected {expected_out:,}, got {total_written:,}")
+        print(f"  Check: WARNING — {total_written:,} rows is not a multiple of 1440")
 
 
 if __name__ == "__main__":

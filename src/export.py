@@ -291,7 +291,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
     return df
 
 
-def _validate_parquet_output(parquet_path: Path, expected_rows: int) -> None:
+def validate_parquet_output(parquet_path: Path, expected_rows: int) -> None:
     """Validate a parquet file footer and metadata after write."""
     import pyarrow.parquet as pq
 
@@ -365,7 +365,7 @@ def merge_parquet_chunks(
         if writer is not None:
             writer.close()
             writer = None
-        _validate_parquet_output(tmp_path, expected_rows)
+        validate_parquet_output(tmp_path, expected_rows)
         tmp_path.replace(output_path)
         print(f"Data successfully exported in parquet format to {output_path}")
     except Exception:
@@ -443,7 +443,7 @@ def export_to_formats(
             parquet_tmp.unlink()
         try:
             df.to_parquet(parquet_tmp, index=False)
-            _validate_parquet_output(parquet_tmp, expected_rows=len(df))
+            validate_parquet_output(parquet_tmp, expected_rows=len(df))
             parquet_tmp.replace(parquet_path)
             print(f"Data successfully exported in parquet format to {parquet_path}")
         except Exception as e:

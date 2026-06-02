@@ -329,6 +329,9 @@ def write_chunk_to_parquet(
     Patient IDs are remapped to [patient_id_offset, patient_id_offset + n_accepted).
     Returns the number of rows written.
     """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     remapped: dict[int, dict[str, object]] = {}
     for i, old_id in enumerate(sorted(results_dict.keys())):
         entry = dict(results_dict[old_id])
@@ -336,7 +339,26 @@ def write_chunk_to_parquet(
         remapped[new_id] = entry
 
     df = _flatten_results(cast(ResultsDict, remapped))
-    df.to_parquet(output_path, index=False)
+
+    # Cast nullable int/bool columns to pandas extension types so pyarrow always
+    # writes int64/bool (not null) regardless of whether all values happen to be None.
+    # Without this, chunks where exercise_overlay / late_bolus_id are all None produce
+    # a 'null'-typed column that mismatches chunks with real values.
+    for col in ["base_scenario", "n_late_boluses", "exercise_overlay",
+                "scenario_id", "missed_meal_id", "late_bolus_id"]:
+        if col in df.columns:
+            df[col] = df[col].astype("Int64")
+    for col in ["had_large_meal", "had_missed_bolus"]:
+        if col in df.columns:
+            df[col] = df[col].astype("boolean")
+
+    # late_bolus_ids: list column → pyarrow infers list<null> when all entries are [].
+    # Build the array with an explicit element type to guarantee list<int64> schema.
+    late_bolus_arr = pa.array(df["late_bolus_ids"].tolist(), type=pa.list_(pa.int64()))
+    table = pa.Table.from_pandas(df.drop(columns=["late_bolus_ids"]), preserve_index=False)
+    table = table.append_column(pa.field("late_bolus_ids", pa.list_(pa.int64())), late_bolus_arr)
+
+    pq.write_table(table, output_path)
     return len(df)
 
 
@@ -360,6 +382,10 @@ def merge_parquet_chunks(
             table = pq.read_table(chunk_path)
             if writer is None:
                 writer = pq.ParquetWriter(tmp_path, table.schema)
+            else:
+                # Cast to match the writer's schema — safe guard against null-type
+                # columns that arise when a chunk has all-None values for a field.
+                table = table.cast(writer.schema_arrow)
             writer.write_table(table)
             del table
         if writer is not None:

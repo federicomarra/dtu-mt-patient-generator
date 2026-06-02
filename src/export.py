@@ -317,6 +317,65 @@ def _validate_parquet_output(parquet_path: Path, expected_rows: int) -> None:
         )
 
 
+def write_chunk_to_parquet(
+    results_dict: dict[int, dict[str, object]],
+    patient_id_offset: int,
+    n_days: int,
+    output_path: Path,
+) -> int:
+    """
+    Flatten one worker's results dict and write to a parquet file.
+
+    Patient IDs are remapped to [patient_id_offset, patient_id_offset + n_accepted).
+    Returns the number of rows written.
+    """
+    remapped: dict[int, dict[str, object]] = {}
+    for i, old_id in enumerate(sorted(results_dict.keys())):
+        entry = dict(results_dict[old_id])
+        new_id = patient_id_offset + i
+        remapped[new_id] = entry
+
+    df = _flatten_results(cast(ResultsDict, remapped))
+    df.to_parquet(output_path, index=False)
+    return len(df)
+
+
+def merge_parquet_chunks(
+    chunk_paths: list[Path],
+    output_path: Path,
+    expected_rows: int,
+) -> None:
+    """
+    Merge sorted per-worker parquet chunks into one final parquet file.
+
+    Uses pyarrow ParquetWriter in streaming mode — only one chunk is in RAM
+    at a time. The temp file is renamed to output_path only after validation.
+    """
+    import pyarrow.parquet as pq
+
+    tmp_path = output_path.with_suffix(".parquet.tmp")
+    writer = None
+    try:
+        for chunk_path in chunk_paths:
+            table = pq.read_table(chunk_path)
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, table.schema)
+            writer.write_table(table)
+            del table
+        if writer is not None:
+            writer.close()
+            writer = None
+        _validate_parquet_output(tmp_path, expected_rows)
+        tmp_path.replace(output_path)
+        print(f"Data successfully exported in parquet format to {output_path}")
+    except Exception:
+        if writer is not None:
+            writer.close()
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
 # Export functions
 def export_to_formats(
     results_dict: object,

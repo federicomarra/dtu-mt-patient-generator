@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import shutil
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from src.export import ExportConfig, export_to_formats
+from src.export import ExportConfig, export_to_formats, write_chunk_to_parquet, merge_parquet_chunks
 from src.simulation import run_simulation
 from src.simulation_config import SimulationConfig
 from src.simulation_utils import create_export_directory
@@ -140,85 +142,109 @@ def generate_library_parallel(
 
     t_start = time.perf_counter()
     all_stats: list[dict[str, object]] = []
-    blocks: list[dict[int, dict[str, object]]] = []
 
-    if workers_eff == 1:
-        result_block, stats = _worker_run(args[0])
-        blocks.append(result_block)
-        all_stats.append(stats)
-        _print_worker_done(stats, workers_eff, t_start)
-    else:
-        with mp.Pool(processes=workers_eff) as pool:
-            # imap_unordered lets us print a line as each worker finishes.
-            pending_blocks: list[tuple[int, dict[int, dict[str, object]]]] = []
-            for result_block, stats in pool.imap_unordered(_worker_run, args):
-                all_stats.append(stats)
-                worker_idx = int(stats["worker_idx"])  # type: ignore[arg-type]
-                pending_blocks.append((worker_idx, result_block))
-                _print_worker_done(stats, workers_eff, t_start)
+    # Write each worker result to a temp parquet chunk immediately as it arrives,
+    # then free the Python dict. This keeps peak RAM to one worker's data at a time
+    # instead of holding all 20k patients simultaneously before the parquet write.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="libgen_chunks_"))
+    # Maps worker_idx → (temp_parquet_path, n_accepted) for ordered merge later.
+    chunk_info: dict[int, tuple[Path, int]] = {}
 
-        # Restore deterministic order before merging so patient IDs are stable.
-        pending_blocks.sort(key=lambda x: x[0])
-        blocks = [b for _, b in pending_blocks]
+    try:
+        if workers_eff == 1:
+            result_block, stats = _worker_run(args[0])
+            all_stats.append(stats)
+            worker_idx = int(stats["worker_idx"])  # type: ignore[arg-type]
+            chunk_path = tmp_dir / f"chunk_{worker_idx:04d}.parquet"
+            n_rows = write_chunk_to_parquet(result_block, patient_id_offset=0, n_days=config.n_days, output_path=chunk_path)
+            chunk_info[worker_idx] = (chunk_path, len(result_block))
+            del result_block
+            _print_worker_done(stats, workers_eff, t_start)
+        else:
+            with mp.Pool(processes=workers_eff) as pool:
+                for result_block, stats in pool.imap_unordered(_worker_run, args):
+                    all_stats.append(stats)
+                    worker_idx = int(stats["worker_idx"])  # type: ignore[arg-type]
+                    chunk_path = tmp_dir / f"chunk_{worker_idx:04d}.parquet"
+                    # Cumulative patient ID offset for this worker so IDs are globally sequential.
+                    pid_offset = cumulative_offsets[worker_idx]
+                    write_chunk_to_parquet(result_block, patient_id_offset=pid_offset, n_days=config.n_days, output_path=chunk_path)
+                    chunk_info[worker_idx] = (chunk_path, len(result_block))
+                    del result_block   # free immediately — dict no longer needed
+                    _print_worker_done(stats, workers_eff, t_start)
 
-    merged = _merge_results(blocks)
-    accepted_total = len(merged)
-    total_elapsed = time.perf_counter() - t_start
+        accepted_total = sum(n for _, n in chunk_info.values())
+        total_elapsed = time.perf_counter() - t_start
 
-    # ── Final summary ──────────────────────────────────────────────
-    accepted_per_worker = [int(s["n_accepted"]) for s in all_stats]  # type: ignore[arg-type]
-    sampled_per_worker = [int(s["n_sampled"]) for s in all_stats]  # type: ignore[arg-type]
-    rejected_per_worker = [int(s["n_rejected"]) for s in all_stats]  # type: ignore[arg-type]
-    s_per_patient_vals = [float(s["s_per_patient"]) for s in all_stats]  # type: ignore[arg-type]
-    avg_s_per_patient = sum(s_per_patient_vals) / len(s_per_patient_vals) if s_per_patient_vals else 0.0
-    acceptance_rate = 100.0 * accepted_total / target_patients if target_patients else 0.0
-    sampled_total = sum(sampled_per_worker)
-    rejected_total = sum(rejected_per_worker)
-    rejection_rate = (100.0 * rejected_total / sampled_total) if sampled_total else 0.0
+        # ── Final summary ──────────────────────────────────────────────
+        accepted_per_worker = [int(s["n_accepted"]) for s in all_stats]  # type: ignore[arg-type]
+        sampled_per_worker = [int(s["n_sampled"]) for s in all_stats]  # type: ignore[arg-type]
+        rejected_per_worker = [int(s["n_rejected"]) for s in all_stats]  # type: ignore[arg-type]
+        s_per_patient_vals = [float(s["s_per_patient"]) for s in all_stats]  # type: ignore[arg-type]
+        avg_s_per_patient = sum(s_per_patient_vals) / len(s_per_patient_vals) if s_per_patient_vals else 0.0
+        acceptance_rate = 100.0 * accepted_total / target_patients if target_patients else 0.0
+        sampled_total = sum(sampled_per_worker)
+        rejected_total = sum(rejected_per_worker)
+        rejection_rate = (100.0 * rejected_total / sampled_total) if sampled_total else 0.0
 
-    print(
-        f"\n── Summary ───────────────────────────────────────────────────\n"
-        f"  accepted / requested : {accepted_total} / {target_patients}  ({acceptance_rate:.1f}%)\n"
-        f"  sampled / rejected   : {sampled_total} / {rejected_total}  (rejection {rejection_rate:.1f}%)\n"
-        f"  per-worker accepted  : {accepted_per_worker}\n"
-        f"  total elapsed        : {_fmt_elapsed(total_elapsed)}\n"
-        f"  avg time / patient   : {avg_s_per_patient:.1f} s  (wall-clock per requested slot)\n"
-        f"─────────────────────────────────────────────────────────────"
-    )
-
-    if accepted_total < target_patients * 0.8:
         print(
-            f"Warning: acceptance rate {acceptance_rate:.1f}% is below 80%. "
-            "Consider relaxing quality thresholds or increasing n_patients."
+            f"\n── Summary ───────────────────────────────────────────────────\n"
+            f"  accepted / requested : {accepted_total} / {target_patients}  ({acceptance_rate:.1f}%)\n"
+            f"  sampled / rejected   : {sampled_total} / {rejected_total}  (rejection {rejection_rate:.1f}%)\n"
+            f"  per-worker accepted  : {accepted_per_worker}\n"
+            f"  total elapsed        : {_fmt_elapsed(total_elapsed)}\n"
+            f"  avg time / patient   : {avg_s_per_patient:.1f} s  (wall-clock per requested slot)\n"
+            f"─────────────────────────────────────────────────────────────"
         )
 
-    output_folder = create_export_directory(base_folder=output_base_folder)
-    if output_folder is None:
-        return None
+        if accepted_total < target_patients * 0.8:
+            print(
+                f"Warning: acceptance rate {acceptance_rate:.1f}% is below 80%. "
+                "Consider relaxing quality thresholds or increasing n_patients."
+            )
 
-    metadata: dict[str, object] = {
-        "parallel_workers": workers_eff,
-        "requested_patients": target_patients,
-        "sampled_patients": sampled_total,
-        "accepted_patients": accepted_total,
-        "rejected_patients": rejected_total,
-        "rejection_rate_percent": round(rejection_rate, 3),
-        "n_days": config.n_days,
-        "random_seed": config.random_seed,
-        "enable_plots": False,
-        "total_elapsed_s": round(total_elapsed, 1),
-    }
+        output_folder = create_export_directory(base_folder=output_base_folder)
+        if output_folder is None:
+            return None
 
-    export_to_formats(
-        results_dict=merged,
-        n_patients=accepted_total,
-        n_days=config.n_days,
-        output_folder=output_folder,
-        export=export_config.to_list(),
-        config_metadata=metadata,
-    )
+        metadata: dict[str, object] = {
+            "parallel_workers": workers_eff,
+            "requested_patients": target_patients,
+            "sampled_patients": sampled_total,
+            "accepted_patients": accepted_total,
+            "rejected_patients": rejected_total,
+            "rejection_rate_percent": round(rejection_rate, 3),
+            "n_days": config.n_days,
+            "random_seed": config.random_seed,
+            "enable_plots": False,
+            "total_elapsed_s": round(total_elapsed, 1),
+        }
 
-    return output_folder
+        if export_config.export_to_parquet:
+            # Stream-merge the per-worker chunk parquets — no full DataFrame in RAM.
+            base_file_name = f"results_{accepted_total}p_{config.n_days}d"
+            parquet_path = output_folder / f"{base_file_name}.parquet"
+            sorted_chunks = [chunk_info[idx][0] for idx in sorted(chunk_info)]
+            expected_rows = accepted_total * config.n_days * 1440
+            print(f"Merging {len(sorted_chunks)} chunk parquets → {parquet_path} …")
+            merge_parquet_chunks(sorted_chunks, parquet_path, expected_rows)
+
+        if export_config.export_to_csv:
+            # CSV export requires loading all results — memory-intensive, avoid for large cohorts.
+            # Reconstruct from chunk parquets via pandas rather than re-running the simulation.
+            import pandas as pd
+            sorted_chunks = [chunk_info[idx][0] for idx in sorted(chunk_info)]
+            df_csv = pd.concat([pd.read_parquet(p) for p in sorted_chunks], ignore_index=True)
+            base_file_name = f"results_{accepted_total}p_{config.n_days}d"
+            csv_tmp = output_folder / f"{base_file_name}.csv.tmp"
+            df_csv.to_csv(csv_tmp, index=False)
+            csv_tmp.replace(output_folder / f"{base_file_name}.csv")
+            print(f"Data successfully exported in csv format to {output_folder / f'{base_file_name}.csv'}")
+
+        return output_folder
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _print_worker_done(

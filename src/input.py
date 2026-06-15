@@ -69,7 +69,7 @@ MEAL_COUNT_DEVIATION_PROB: float = 0.20
 # are no longer used.
 
 P_LARGE_MEAL:   float = 0.09  # large-meal event (restaurant, party, event dining, etc.)
-P_MISSED_BOLUS: float = 0.09  # raised from 0.06: primary lever for physiological CV (each missed bolus adds a clean 2–4h excursion to 12–16 mmol/L, increasing population std without causing chronic hyperglycemia)
+P_MISSED_BOLUS: float = 0.13  # 0.09→0.13: more missed boluses → more excursions, higher population std (closes sim→real variability gap; primary lever for physiological CV)
 P_LATE_BOLUS:   float = 0.06
 # Conditional probability of a 2nd late-bolus event given one was already sampled.
 # Inflates the sc6 daily marginal slightly above 0.06 (to ~0.069); documented in thesis.

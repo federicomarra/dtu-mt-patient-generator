@@ -9,7 +9,7 @@ class SimulationConfig:
     """Complete simulation configuration."""
 
     n_patients: int = 100
-    n_days: int = 7
+    n_days: int = 14   # tuning batch matches the 14-day cohort; raise to 42-56 for the scale run
     international_unit: bool = True
     noise_std: float = 0.33  # real Dexcom/Libre MARD 8-10% → ±0.56-0.70 mmol/L at 7 mmol/L mean; AR(1) stationary std = noise_std
     noise_autocorr: float = 0.7   # AR(1) φ coefficient for the lagged CGM noise model
@@ -27,7 +27,7 @@ class SimulationConfig:
     instability_max_glucose_mmol: float = 33.3   # 600 mg/dL / 18.016 — raised from 550 to reduce
     # rejection from cortisol/dawn-driven single-day peaks while remaining within
     # physiologically possible T1D range (DKA onset >600 mg/dL)
-    instability_hyper_pct_threshold: float = 60.0
+    instability_hyper_pct_threshold: float = 75.0   # raised 60→75: admit realistic moderate-control patients (sim→real gap: real hyper 22–39% vs sim 17%); cumulative gate that bites long horizons
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
     # Any day where an exercise session is scheduled (regardless of base_scenario) uses
     # the _exercise variants because physiological hypo during/after vigorous exercise is
@@ -77,7 +77,7 @@ class SimulationConfig:
     #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
     #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 70.0
+    quality_max_hyper_pct_threshold: float = 85.0   # raised 70→85: per-day worst-case gate, headroom for higher-hyper realistic patients
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L). With the tighter safety stack (guard 3.9, L1 rescue
     # 3.9, L2 rescue 3.0) floor breaches should be rare; the floor guards against the tail
@@ -126,7 +126,7 @@ class SimulationConfig:
     # carbs (stopping at a higher post-meal plateau) and ISF to correct less aggressively,
     # producing sustained post-meal excursions above 10 mmol/L consistent with HbA1c ~7.5–8%
     # and real-world T1D moderate control (T1D Exchange 2016 median HbA1c 8.4%).
-    calibration_target_glycemia_mmol: float = 6.5
+    calibration_target_glycemia_mmol: float = 7.5   # 6.5→7.5: ICR delivers less insulin/carb → higher post-meal plateaus → more hyper (closes sim→real gap; iterate via gap_assess)
 
     enable_iob_bolus_guard: bool = True
     iob_guard_units: float = 4.0
@@ -139,7 +139,7 @@ class SimulationConfig:
     cgm_min_glucose_mmol: float = 1.5
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 10.5  # ~189 mg/dL: fires when glucose first exceeds 10.5 mmol/L, capping the duration of post-meal excursions and preventing the 10–12.5 mmol/L "dead zone" that caused chronic quality_hyper rejections at long horizons (14+ days). IOB guard prevents double-dosing.
+    correction_isf_target_mmol: float = 13.0  # 10.5→13.0 (~234 mg/dL): correct only severe hyper so realistic sustained post-meal excursions survive instead of being clawed back (sim→real gap: sim under-represents hyper). IOB guard still prevents double-dosing.
     correction_isf_check_interval_min: int = 5
     correction_isf_cooldown_min: int = 90
     correction_isf_max_bolus_units: float = 2.0

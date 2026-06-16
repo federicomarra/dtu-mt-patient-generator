@@ -59,7 +59,7 @@ class SimulationConfig:
     # Ordering coherence: exercise max (17–21% with spillover) > non-exercise hard cap (15%) ✓
     quality_max_hypo_pct_threshold: float = 23.0          # 15→23: non-exercise per-day hard cap raised for the 42-day scale horizon (more days = more chances to trip the gate; avoids discarding a 30-day-deep sim over one bad late day). 23% TBR sits just under Battelino 25% high-risk line; chronic counter (soft 10%/3 days) still rejects pathological patients
     quality_max_hypo_pct_soft_threshold: float = 10.0     # counting threshold for chronic-pattern check
-    quality_max_hypo_bad_nonex_days: int = 3              # max allowed non-exercise days above soft threshold
+    quality_max_hypo_bad_nonex_days: int = 7              # 3→7: horizon-scaled for 42d (3/14 ≈ 7/42). At 14d this gate fired 0.6% of rejections; at 42d it rose to ~6% and fired late (days 17-36), discarding deep sims. 7 keeps the same proportional leniency. Validated on 50×42 trial.
     # Raised from 2→3: under the stochastic exercise model active patients have only ~2-3
     # non-exercise days per 7-day run, and ~1-2 of those immediately follow an exercise day
     # carrying Z spillover (~1.6 mmol/L overnight glucose drop for aerobic, ~2.3 for prolonged).
@@ -77,7 +77,7 @@ class SimulationConfig:
     #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
     #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 85.0   # raised 70→85: per-day worst-case gate, headroom for higher-hyper realistic patients
+    quality_max_hyper_pct_threshold: float = 90.0   # 85→90: per-day worst-case gate. HYPER is ~86% of all rejections at the 42d horizon; admitting marginal 85-90% days both cuts the dominant reject source (rej 80→~68%) and lifts cohort hyper% 29→~33 toward Ohio (33.5). Validated on 50×42 trial.
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L). With the tighter safety stack (guard 3.9, L1 rescue
     # 3.9, L2 rescue 3.0) floor breaches should be rare; the floor guards against the tail

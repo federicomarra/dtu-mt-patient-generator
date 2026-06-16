@@ -90,7 +90,7 @@ class SimulationConfig:
     n_warmup_days: int = 3
 
     enable_hypo_guard: bool = True
-    hypo_guard_mmol: float = 3.9           # ADA/Battelino 2019 Level 1 alert threshold
+    hypo_guard_mmol: float = 3.6           # 3.9→3.6: let glucose ride lower before suspend → more time-below-range (sim→real gap: real hypo 2.5-8.5% vs sim 1.5%); still above L2 3.0 floor
     hypo_guard_suspend_min: int = 20
     hypo_guard_retrigger_cooldown_min: int = 20
     suppress_meal_bolus_on_guard: bool = False
@@ -100,7 +100,7 @@ class SimulationConfig:
     #   L2 (<3.0 mmol/L):    treat with 30 g carbs; independent cooldown so L2 can fire
     #                         even if L1 recently fired — at 3.0 you do not wait.
     enable_hypo_rescue: bool = True
-    hypo_rescue_trigger_mmol: float = 3.9  # L1: fires at same threshold as hypo guard
+    hypo_rescue_trigger_mmol: float = 3.6  # 3.9→3.6: fires later (same as guard) → glucose accumulates more hypo minutes before carb rescue, widening σ and lifting hypo% toward real
     hypo_rescue_carbs_g: float = 15.0
     hypo_rescue_duration_min: int = 15
     hypo_rescue_retrigger_cooldown_min: int = 45

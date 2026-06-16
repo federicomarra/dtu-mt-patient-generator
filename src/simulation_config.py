@@ -57,14 +57,14 @@ class SimulationConfig:
     # chronic-pattern check.  Exercise days are determined by day_plan.is_exercise_day
     # (exercise is not None), regardless of base_scenario.
     # Ordering coherence: exercise max (17–21% with spillover) > non-exercise hard cap (15%) ✓
-    quality_max_hypo_pct_threshold: float = 15.0          # non-exercise per-day hard cap
+    quality_max_hypo_pct_threshold: float = 23.0          # 15→23: non-exercise per-day hard cap raised for the 42-day scale horizon (more days = more chances to trip the gate; avoids discarding a 30-day-deep sim over one bad late day). 23% TBR sits just under Battelino 25% high-risk line; chronic counter (soft 10%/3 days) still rejects pathological patients
     quality_max_hypo_pct_soft_threshold: float = 10.0     # counting threshold for chronic-pattern check
     quality_max_hypo_bad_nonex_days: int = 3              # max allowed non-exercise days above soft threshold
     # Raised from 2→3: under the stochastic exercise model active patients have only ~2-3
     # non-exercise days per 7-day run, and ~1-2 of those immediately follow an exercise day
     # carrying Z spillover (~1.6 mmol/L overnight glucose drop for aerobic, ~2.3 for prolonged).
     # A limit of 2 left almost no headroom for the active patient subgroup.
-    quality_max_hypo_pct_exercise_threshold: float = 17.0
+    quality_max_hypo_pct_exercise_threshold: float = 25.0   # 17→25: keeps ordering exercise(25) ≥ non-exercise(23) for the 42-day horizon. NOTE: spillover bonus (+2/exercise day in 2-day lookback) can lift the effective cap to ~29% on back-to-back exercise days — aggressive but a single-worst-day cap, not a cohort average; dial spillover down if 42d trial over-admits
     # Bonus added to the hypo threshold per exercise day found in the 2-day lookback window.
     # The Z state (tau_Z≈600 min, Z_max=0.2) retains ~24% of Z_max at the start of the
     # following calendar day (~9h post-session), causing an integrated ~1.6 mmol/L overnight

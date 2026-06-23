@@ -17,6 +17,24 @@ _AGE_YEARS_MAX: float = 65.0
 _AGE_YEARS_MEAN: float = 35.0
 _AGE_YEARS_STD: float = 12.0
 
+# --- Per-patient therapy heterogeneity (sim→real realism knob #1) -------------
+# Real T1D cohorts are heterogeneous in CONTROL QUALITY, not just physiology: each
+# patient targets a different glycaemic setpoint and dose with imperfect ICR/ISF.
+# The simulator otherwise bisection-calibrates every patient to ONE common target
+# with perfect ICR/ISF, which homogenises outcomes (narrow mean/TIR/hypo/hyper
+# spread). These two per-patient draws restore the spread. See ml/docs/SIM_REALISM.md.
+#   glycemic_target_offset_mmol: added to config.calibration_target_glycemia_mmol
+#     before ICR/ISF bisection → spreads each patient's controlled setpoint.
+#   therapy_mult: post-bisection multiplier on BOTH ICR and ISF (shared = one
+#     "therapy aggressiveness" per patient) → imperfect dosing; >1 under-doses
+#     (runs higher), <1 over-doses (more hypo). Applied in simulation.py when the
+#     matching config toggles are on; neutral (0.0 / 1.0) otherwise.
+_GLYCEMIC_TARGET_OFFSET_STD: float = 1.0   # [mmol/L] per-patient setpoint spread
+_THERAPY_MULT_MEAN: float = 1.0
+_THERAPY_MULT_STD: float = 0.15            # CV of per-patient ICR/ISF mis-calibration
+_THERAPY_MULT_LO: float = 0.7
+_THERAPY_MULT_HI: float = 1.3
+
 
 def _get_hovorka_base_params() -> ParameterSet:
     """Return standard Hovorka parameters for a reference patient."""
@@ -90,6 +108,10 @@ def _get_hovorka_base_params() -> ParameterSet:
         # Reference patient uses population mean; individual values sampled in
         # _sample_single_patient(). See _dawn_egp_factor() in model.py.
         "dawn_amp":    0.12,      # [fraction] peak EGP0 elevation (12% = population mean)
+        # Per-patient therapy heterogeneity — neutral for the reference patient;
+        # sampled in _sample_single_patient(). See module constants above.
+        "glycemic_target_offset_mmol": 0.0,   # [mmol/L] setpoint offset (0 = central target)
+        "therapy_mult":                1.0,   # [1] ICR/ISF mis-calibration (1 = perfect)
     }
 
 
@@ -265,6 +287,16 @@ def _sample_single_patient(rng: np.random.Generator, base: ParameterSet) -> Para
     # elevation in T1D; mean 0.12 reflects ~60–70% prevalence of clinically
     # significant dawn phenomenon (Monnier et al. 2012; Carroll & Schade 2005).
     p["dawn_amp"] = float(np.clip(rng.normal(0.12, 0.07), 0.0, 0.22))
+
+    # Per-patient therapy heterogeneity (realism knob #1). Drawn here so they are
+    # reproducible with the patient seed; consumed in simulation.py under config
+    # toggles. Offset is symmetric (good↔poor control); therapy_mult truncated to
+    # keep acceptance reasonable (extreme dosing error → rejected by the gates).
+    p["glycemic_target_offset_mmol"] = float(rng.normal(0.0, _GLYCEMIC_TARGET_OFFSET_STD))
+    p["therapy_mult"] = _sample_truncated_normal(
+        rng, _THERAPY_MULT_MEAN, _THERAPY_MULT_STD,
+        lower=_THERAPY_MULT_LO, upper=_THERAPY_MULT_HI,
+    )
 
     return p
 

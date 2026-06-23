@@ -1,6 +1,7 @@
 # Hovorka Model Monte Carlo Simulation
 # Main script for generating a library of patient simulations in parallel.
 
+import argparse
 import os
 import sys
 import time
@@ -14,6 +15,18 @@ from src.simulation_config import SimulationConfig
 
 
 if __name__ == "__main__":
+    # Realism-knob experiment (ml/docs/SIM_REALISM.md): generate twin cohorts that
+    # differ ONLY in the per-patient therapy-heterogeneity knob, identical otherwise.
+    #   --knob on  → per-patient glycaemic target + therapy mis-calibration (default)
+    #   --knob off → control cohort (every patient calibrated to one target, perfect ICR/ISF)
+    # Output filename is tagged knobon/knoboff so the two cohorts never collide.
+    ap = argparse.ArgumentParser(description="parallel patient-library generation")
+    ap.add_argument("--n_patients", type=int, default=2000)
+    ap.add_argument("--n_days", type=int, default=42)
+    ap.add_argument("--knob", choices=["on", "off"], default="on")
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+    knob_on = args.knob == "on"
     # On DTU HPC (LSF), use the allocated CPU count instead of the node's total.
     # os.cpu_count() returns all CPUs on the physical node (e.g. 64), not your
     # LSF allocation, which would over-subscribe your job and risk getting killed.
@@ -23,16 +36,19 @@ if __name__ == "__main__":
     workers = _lsf_cpus if _lsf_cpus > 0 else max(1, (os.cpu_count() or 2) // 2)
 
     config = SimulationConfig(
-        n_patients=20000,
-        n_days=14,           # 2 weeks: gives sequence models a full baseline before anomaly days
+        n_patients=args.n_patients,
+        n_days=args.n_days,  # 42 days: long baseline before anomaly days; matches deliverable horizon
         international_unit=True,
         noise_std=0.10,
         noise_autocorr=0.7,
         random_scenarios=True,
         clip_states=True,
         std_patient=False,
-        random_seed=42,
+        random_seed=args.seed,
         enable_plots=False,
+        # Realism knob #1 (both default ON in SimulationConfig; flipped off for the control cohort)
+        personalise_glycemic_target=knob_on,
+        therapy_miscalibration=knob_on,
     )
 
     export_config = ExportConfig(
@@ -41,7 +57,8 @@ if __name__ == "__main__":
     )
 
     t0 = time.perf_counter()
-    folder = generate_library_parallel(config, export_config, workers=workers)
+    folder = generate_library_parallel(config, export_config, workers=workers,
+                                       name_suffix=f"knob{args.knob}")
     total_s = time.perf_counter() - t0
 
     mins, secs = divmod(int(total_s), 60)

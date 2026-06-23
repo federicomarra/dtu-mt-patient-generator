@@ -35,7 +35,13 @@ cd /zhome/15/9/213553/dtu-mt-patient-generator
 # use this for unbuffered output, so that you can check in real-time
 # (with tail -f logs/output_.out logs/output_.err)
 # what your program was printing "on the screen"
-python3 -u library_generator.py
+#
+# Realism-knob experiment (ml/docs/SIM_REALISM.md). Submit TWICE, identical config
+# except the per-patient therapy-heterogeneity knob, to isolate its effect:
+#   KNOB=on  bsub < run_simulation.sh   → results_2000p_42d_knobon.parquet
+#   KNOB=off bsub < run_simulation.sh   → results_2000p_42d_knoboff.parquet  (control)
+# (LSF propagates the submission environment to the job by default.)
+python3 -u library_generator.py --knob "${KNOB:-on}" --n_patients 2000 --n_days 42 --seed 42
 
 # use this for just piping everything into a file, 
 # the program knows then, that it's outputting to a file

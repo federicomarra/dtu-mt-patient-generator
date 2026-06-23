@@ -214,9 +214,21 @@ def run_simulation(
             us_calibrated_mU_min = float(x0_initial[2]) / tau_i if tau_i > 0 else (config.basal_hourly * 1000.0 / 60.0)
             basal_hourly_patient = (us_calibrated_mU_min * 60.0 / 1000.0) if config.use_calibrated_basal else config.basal_hourly
 
-            # Compute ICR and ISF (sensitivity factors)
-            insulin_carbo_ratio_patient = find_icr(params=patient_params, initial_icr=config.init_insulin_carbo_ratio, target_glycemia_mmol=config.calibration_target_glycemia_mmol, print_progress=False)
-            insulin_sensitivity_patient = find_isf(params=patient_params, initial_isf=config.init_insulin_sensitivity_factor, target_glycemia_mmol=config.calibration_target_glycemia_mmol, print_progress=False)
+            # Compute ICR and ISF (sensitivity factors).
+            # Realism knob #1 (ml/docs/SIM_REALISM.md): per-patient glycaemic setpoint +
+            # imperfect dosing, so patients are not all calibrated to one target with
+            # perfect ICR/ISF (the homogeniser behind the narrow sim→real spread).
+            cal_target = config.calibration_target_glycemia_mmol
+            if config.personalise_glycemic_target:
+                cal_target = float(np.clip(
+                    cal_target + float(patient_params.get("glycemic_target_offset_mmol", 0.0)),
+                    config.glycemic_target_min_mmol, config.glycemic_target_max_mmol))
+            insulin_carbo_ratio_patient = find_icr(params=patient_params, initial_icr=config.init_insulin_carbo_ratio, target_glycemia_mmol=cal_target, print_progress=False)
+            insulin_sensitivity_patient = find_isf(params=patient_params, initial_isf=config.init_insulin_sensitivity_factor, target_glycemia_mmol=cal_target, print_progress=False)
+            if config.therapy_miscalibration:
+                therapy_mult = float(patient_params.get("therapy_mult", 1.0))
+                insulin_carbo_ratio_patient *= therapy_mult
+                insulin_sensitivity_patient *= therapy_mult
 
             # Store into patient params
             patient_params["ICR"] = insulin_carbo_ratio_patient

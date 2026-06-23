@@ -77,7 +77,7 @@ class SimulationConfig:
     #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
     #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 90.0   # 85→90: per-day worst-case gate. HYPER is ~86% of all rejections at the 42d horizon; admitting marginal 85-90% days both cuts the dominant reject source (rej 80→~68%) and lifts cohort hyper% 29→~33 toward Ohio (33.5). Validated on 50×42 trial.
+    quality_max_hyper_pct_threshold: float = 95.0   # 90→95 (realism knob #1, ml/docs/SIM_REALISM.md): admit the poorly-controlled tail that therapy heterogeneity now produces, so v.hyper% per-patient spread widens 14→19 (real ohio~12/hupa~22). Earlier: 85→90 lifted cohort hyper toward Ohio. Keep instability gates (75/33.3mmol) as-is — they are the solver's stiff-ODE guard; relaxing them admits near-DKA patients that grind RK45.
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L). With the tighter safety stack (guard 3.9, L1 rescue
     # 3.9, L2 rescue 3.0) floor breaches should be rare; the floor guards against the tail
@@ -127,6 +127,21 @@ class SimulationConfig:
     # producing sustained post-meal excursions above 10 mmol/L consistent with HbA1c ~7.5–8%
     # and real-world T1D moderate control (T1D Exchange 2016 median HbA1c 8.4%).
     calibration_target_glycemia_mmol: float = 7.5   # 6.5→7.5: ICR delivers less insulin/carb → higher post-meal plateaus → more hyper (closes sim→real gap; iterate via gap_assess)
+
+    # Per-patient therapy heterogeneity (sim→real realism knob #1; ml/docs/SIM_REALISM.md).
+    # The simulator otherwise calibrates EVERY patient to calibration_target_glycemia_mmol
+    # with perfect ICR/ISF → homogeneous outcomes (narrow per-patient mean/TIR/hypo/hyper
+    # spread, the measured sim→real gap). These toggles restore inter-patient spread using
+    # the per-patient draws sampled in parameters.py (magnitudes are module constants there):
+    #   personalise_glycemic_target — offset each patient's calibration setpoint
+    #     (spreads controlled mean glucose / TIR; keeps each patient internally well-dosed).
+    #   therapy_miscalibration — multiply post-bisection ICR/ISF by a per-patient factor
+    #     (imperfect dosing → wider hypo/hyper tails + per-patient volatility).
+    # Both default ON; ablate by setting either False. Target clipped to [6.0, 9.5].
+    personalise_glycemic_target: bool = True
+    glycemic_target_min_mmol: float = 6.0
+    glycemic_target_max_mmol: float = 9.5
+    therapy_miscalibration: bool = True
 
     enable_iob_bolus_guard: bool = True
     iob_guard_units: float = 4.0

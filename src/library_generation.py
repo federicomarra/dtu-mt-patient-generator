@@ -101,8 +101,13 @@ def generate_library_parallel(
     export_config: ExportConfig,
     workers: int,
     output_base_folder: str = "monte_carlo_results_parallel",
+    name_suffix: str = "",
 ) -> Path | None:
-    """Generate a large patient library in parallel and export merged results."""
+    """Generate a large patient library in parallel and export merged results.
+
+    name_suffix: optional tag appended to the parquet filename (e.g. "knobon") so
+    cohorts that differ only in config (not patient/day count) get distinct names.
+    """
     if workers <= 0:
         raise ValueError("workers must be >= 1")
 
@@ -143,7 +148,7 @@ def generate_library_parallel(
     if output_folder is None:
         return None
 
-    base_file_name = f"results_{target_patients}p_{config.n_days}d"
+    base_file_name = f"results_{target_patients}p_{config.n_days}d" + (f"_{name_suffix}" if name_suffix else "")
     parquet_path   = output_folder / f"{base_file_name}.parquet"
     parquet_tmp    = output_folder / f"{base_file_name}.parquet.tmp"
 

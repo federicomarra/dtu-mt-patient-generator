@@ -25,8 +25,12 @@ if __name__ == "__main__":
     ap.add_argument("--n_days", type=int, default=42)
     ap.add_argument("--knob", choices=["on", "off"], default="on")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--tag", default="",
+                    help="extra filename tag (pass $LSB_JOBID on HPC so concurrent "
+                         "jobs that share a timestamp folder never collide)")
     args = ap.parse_args()
     knob_on = args.knob == "on"
+    suffix = f"knob{args.knob}" + (f"_{args.tag}" if args.tag else "")
     # On DTU HPC (LSF), use the allocated CPU count instead of the node's total.
     # os.cpu_count() returns all CPUs on the physical node (e.g. 64), not your
     # LSF allocation, which would over-subscribe your job and risk getting killed.
@@ -57,8 +61,9 @@ if __name__ == "__main__":
     )
 
     t0 = time.perf_counter()
+    print(f"  knob={args.knob}  →  output suffix: {suffix}", flush=True)
     folder = generate_library_parallel(config, export_config, workers=workers,
-                                       name_suffix=f"knob{args.knob}")
+                                       name_suffix=suffix)
     total_s = time.perf_counter() - t0
 
     mins, secs = divmod(int(total_s), 60)

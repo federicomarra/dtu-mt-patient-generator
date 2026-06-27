@@ -37,11 +37,15 @@ cd /zhome/15/9/213553/dtu-mt-patient-generator
 # what your program was printing "on the screen"
 #
 # Realism-knob experiment (ml/docs/SIM_REALISM.md). Submit TWICE, identical config
-# except the per-patient therapy-heterogeneity knob, to isolate its effect:
-#   KNOB=on  bsub < run_simulation.sh   → results_2000p_42d_knobon.parquet
-#   KNOB=off bsub < run_simulation.sh   → results_2000p_42d_knoboff.parquet  (control)
-# (LSF propagates the submission environment to the job by default.)
-python3 -u library_generator.py --knob "${KNOB:-on}" --n_patients 2000 --n_days 42 --seed 42
+# except the per-patient therapy-heterogeneity knob, to isolate its effect.
+# IMPORTANT: `bsub < script` does NOT carry your shell env into the job — you MUST
+# pass KNOB through with `-env` (plain `KNOB=off bsub < ...` is silently ignored):
+#   bsub -env "all, KNOB=on"  < run_simulation.sh   → ..._knobon_<jobid>.parquet
+#   bsub -env "all, KNOB=off" < run_simulation.sh   → ..._knoboff_<jobid>.parquet  (control)
+# $LSB_JOBID is appended to the filename so two concurrent jobs (which can land in
+# the same HH:MM:SS export folder) can never overwrite each other.
+python3 -u library_generator.py --knob "${KNOB:-on}" --tag "${LSB_JOBID:-local}" \
+    --n_patients 2000 --n_days 42 --seed 42
 
 # use this for just piping everything into a file, 
 # the program knows then, that it's outputting to a file

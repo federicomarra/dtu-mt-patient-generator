@@ -2,9 +2,9 @@
 Comprehensive fasting steady-state verification test.
 
 Three levels of verification for each target glucose:
-  1. Glucose accuracy   — returned state glucose matches target within tight tolerance
-  2. Fixed-point check  — all 18 ODE derivatives are ~0 at the returned state
-  3. Integration stability — forward ODE integration with basal-only for 60 min stays flat
+  1. Glucose accuracy   - returned state glucose matches target within tight tolerance
+  2. Fixed-point check  - all 18 ODE derivatives are ~0 at the returned state
+  3. Integration stability - forward ODE integration with basal-only for 60 min stays flat
 
 Also tests the mg/dL input path (what the main simulation uses) in addition to mmol/L.
 """
@@ -27,7 +27,7 @@ from src.model import (
 )
 from src.parameters import get_base_params, generate_monte_carlo_patients
 
-# ── Tolerances ────────────────────────────────────────────────────────────────
+# -- Tolerances ----------------------------------------------------------------
 GLUCOSE_TOLERANCE_MMOL   = 0.05   # max acceptable |G_actual - G_target| [mmol/L]
 DERIVATIVE_TOLERANCE     = 1e-4   # max acceptable |dX/dt| at steady state
 DRIFT_TOLERANCE_MMOL     = 0.10   # max acceptable glucose drift over 60 min integration
@@ -123,7 +123,7 @@ def run_all_tests():
     failed = 0
 
     print("=" * 70)
-    print("STEADY STATE TEST — base patient, mmol/L inputs")
+    print("STEADY STATE TEST - base patient, mmol/L inputs")
     print("=" * 70)
     for target in TARGETS_MMOL:
         label = f"base  {target:.1f} mmol/L"
@@ -142,7 +142,7 @@ def run_all_tests():
 
     print()
     print("=" * 70)
-    print("STEADY STATE TEST — base patient, mg/dL inputs (simulation path)")
+    print("STEADY STATE TEST - base patient, mg/dL inputs (simulation path)")
     print("=" * 70)
     MwG = float(params["MwG"])
     for target_mgdl in TARGETS_MGDL:
@@ -163,7 +163,7 @@ def run_all_tests():
 
     print()
     print("=" * 70)
-    print(f"STEADY STATE TEST — {N_RANDOM_PATIENTS} random Monte Carlo patients, 100 mg/dL target")
+    print(f"STEADY STATE TEST - {N_RANDOM_PATIENTS} random Monte Carlo patients, 100 mg/dL target")
     print("=" * 70)
     patients = generate_monte_carlo_patients(N_RANDOM_PATIENTS, standard_patient=False, seed=42)
     for i, p in enumerate(patients):

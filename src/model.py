@@ -48,7 +48,7 @@ def state_listify(
     rGU: float = 0.0,    # exercise glucose utilization rate [1/min]
     rGP: float = 0.0,    # exercise glucose production rate [1/min]
     tPA: float = 0.0,    # PA tracking state
-    PAint: float = 0.0,  # cumulative PA intensity integral [count·min]
+    PAint: float = 0.0,  # cumulative PA intensity integral [count*min]
     rdepl: float = 0.0,  # glycogen depletion rate [1/min]
     th: float = 0.0,     # high-intensity duration accumulator
 ) -> list[float]:
@@ -118,17 +118,17 @@ def _get_input_values(
 
 
 def _dawn_egp_factor(t_min: float, amp: float) -> float:
-    """GH-driven EGP0 elevation — the hepatic component of the dawn phenomenon.
+    """GH-driven EGP0 elevation - the hepatic component of the dawn phenomenon.
 
-    Growth hormone pulses at 01:00–03:00 during deep sleep; the downstream
+    Growth hormone pulses at 01:00-03:00 during deep sleep; the downstream
     hepatic effect is delayed ~2 h, producing elevated glycogenolysis and
     gluconeogenesis from ~03:00 onward (Perriello et al. 1988).  This is the
     EARLIER of the two dawn-hormone effects and is predominantly a FASTING
     phenomenon (peaks before most patients eat).
 
-    Does NOT model cortisol — see _cortisol_si_factor() for that component.
+    Does NOT model cortisol - see _cortisol_si_factor() for that component.
 
-    Window: 03:00–07:00, peak 05:00.  amp is per-patient (see parameters.py).
+    Window: 03:00-07:00, peak 05:00.  amp is per-patient (see parameters.py).
     """
     DAWN_START = 180.0   # 03:00
     DAWN_PEAK  = 300.0   # 05:00
@@ -143,7 +143,7 @@ def _dawn_egp_factor(t_min: float, amp: float) -> float:
 
 
 def _cortisol_si_factor(t_min: float, dawn_amp: float) -> float:
-    """Cortisol-driven morning insulin resistance — the peripheral SI component.
+    """Cortisol-driven morning insulin resistance - the peripheral SI component.
 
     Cortisol follows a circadian rhythm peaking at ~08:00 (480 min).  Unlike
     GH (which acts mainly on EGP), cortisol's primary glucose effect is
@@ -152,23 +152,23 @@ def _cortisol_si_factor(t_min: float, dawn_amp: float) -> float:
     and SI3 (EGP suppression) during the breakfast window.
 
     This is the LATER of the two dawn-hormone effects and overlaps directly
-    with breakfast (06:30–08:00), explaining why morning meals are hardest to
+    with breakfast (06:30-08:00), explaining why morning meals are hardest to
     manage in T1D (Carroll & Schade 2005; Boden et al. 1996).
 
     Correlation with dawn_amp: both GH and cortisol are elevated in the same
     hormonal axis; patients with a strong EGP dawn rise (high dawn_amp) also
     show stronger cortisol-mediated morning resistance.
 
-    Magnitude: dawn_amp × 0.6 at peak.
-      mean dawn_amp=0.12 → ~7% SI reduction  (lower end of clinical range)
-      max  dawn_amp=0.22 → ~13% SI reduction (within published range)
+    Magnitude: dawn_amp x 0.6 at peak.
+      mean dawn_amp=0.12 -> ~7% SI reduction  (lower end of clinical range)
+      max  dawn_amp=0.22 -> ~13% SI reduction (within published range)
 
     The control stack (apply_guard_iob_isf) uses the calibrated ISF and is
-    unaware of this morning resistance — matching real T1D behaviour where
+    unaware of this morning resistance - matching real T1D behaviour where
     patients dose with their standard ISF but find corrections less effective
     in the morning.
 
-    Window: 06:00–10:00, peak 08:00.
+    Window: 06:00-10:00, peak 08:00.
     """
     CORTISOL_START    = 360.0   # 06:00
     CORTISOL_PEAK     = 480.0   # 08:00
@@ -252,7 +252,7 @@ def hovorka_equations(
     else:
         fr = 0.0
 
-    # Cortisol-driven morning SI reduction (06:00–10:00): scales kb so plasma
+    # Cortisol-driven morning SI reduction (06:00-10:00): scales kb so plasma
     # insulin I drives x1/x2/x3 less effectively during the breakfast window.
     # GH effect (EGP) is handled separately in EGPc below; these two effects
     # share dawn_amp as a common per-patient parameter but act on different
@@ -265,7 +265,7 @@ def hovorka_equations(
     dx2 = kb2 * I - ka2 * x2
     dx3 = kb3 * I - ka3 * x3
 
-    # ETH Deichmann exercise model — replaces Rashid HR-based states.
+    # ETH Deichmann exercise model - replaces Rashid HR-based states.
     # Input: ac_t [accelerometer counts] instead of delta_hr_t.
     eth = compute_eth_exercise_terms(
         Y=Y, Z=Z, rGU=rGU, rGP=rGP,
@@ -287,14 +287,14 @@ def hovorka_equations(
     # Hovorka glucose compartment terms
     R12  = (x1 * Q1) - (k12 * Q2)
     R2   = x2 * Q2
-    # GH-driven EGP elevation (03:00–07:00): growth hormone raises hepatic glucose
+    # GH-driven EGP elevation (03:00-07:00): growth hormone raises hepatic glucose
     # production before breakfast.  Cortisol's SI effect is applied to kb above.
     EGPc = EGP0 * BW * max(0.0, 1.0 - x3) * _dawn_egp_factor(float(t), float(params.get("dawn_amp", 0.12)))
 
     # ETH exercise contributions grafted onto Q1:
-    #   exercise_uptake — insulin-independent glucose disposal during exercise
-    #   exercise_prod   — net EGP boost (reduced by glycogen depletion for prolonged sessions)
-    #   exercise_si     — post-exercise enhanced insulin sensitivity (Z amplifies x1)
+    #   exercise_uptake - insulin-independent glucose disposal during exercise
+    #   exercise_prod   - net EGP boost (reduced by glycogen depletion for prolonged sessions)
+    #   exercise_si     - post-exercise enhanced insulin sensitivity (Z amplifies x1)
     dQ1 = UG + EGPc - R12 - F01c - fr \
           - float(eth["exercise_uptake"]) \
           + float(eth["exercise_prod"]) \
@@ -360,7 +360,7 @@ def _convert_target_glucose_to_mmol(
     if international_units:
         return target_mmol, 0.1
     # mg/dL path: convert target to mmol/L; tolerance stays at 0.1 mmol/L (= 1.8 mg/dL).
-    # Dividing by MwG/10 would give 0.0055 mmol/L — 18× too tight and physically meaningless.
+    # Dividing by MwG/10 would give 0.0055 mmol/L - 18x too tight and physically meaningless.
     return target_mmol / (params["MwG"] / 10.0), 0.1
 
 
@@ -371,7 +371,7 @@ def _steady_state_input_stub(*_: object, **__: object) -> InputValues:
 def _project_state_and_insulin(state: np.ndarray, insulin_amount: float) -> tuple[np.ndarray, float]:
     """Enforces box constraints on physiological states and insulin.
 
-    Clips nonnegative states to [0, ∞) and insulin to [1e-6, 200.0] mU/min.
+    Clips nonnegative states to [0, inf) and insulin to [1e-6, 200.0] mU/min.
     Ensures all residual and Jacobian evaluations remain in physically valid domains.
     """
     projected_state = np.asarray(state, dtype=np.float64).copy()
@@ -464,11 +464,11 @@ def _compute_hovorka_analytical_jacobian(
     """Analytical Jacobian of the 18-state Hovorka + ETH exercise system.
 
     This Jacobian is evaluated exclusively at the fasting steady state (no exercise,
-    AC=0), where all 8 ETH exercise states (Y…th) are zero. At rest the ETH states
+    AC=0), where all 8 ETH exercise states (Y...th) are zero. At rest the ETH states
     decouple from the Hovorka core: their ODE rows are diagonal with negative
     self-derivatives, and they contribute no terms to the Q1/Q2 rows.
-    The resulting 19×19 matrix therefore has the same top-left 10×10 Hovorka
-    block as before, plus an 8×8 diagonal block for the exercise states.
+    The resulting 19x19 matrix therefore has the same top-left 10x10 Hovorka
+    block as before, plus an 8x8 diagonal block for the exercise states.
     """
     projected_z = _project_hovorka_variables(z)
     state = projected_z[:-1]
@@ -511,7 +511,7 @@ def _compute_hovorka_analytical_jacobian(
     d_fr_d_q1   = 0.003 if glucose >= 9.0 else 0.0
     d_egpc_d_x3 = -egp0 * bw if x3 < 1.0 else 0.0
 
-    # 19×19: 18 state rows + 1 glucose residual row, columns = 18 states + u
+    # 19x19: 18 state rows + 1 glucose residual row, columns = 18 states + u
     jacobian = np.zeros((19, 19), dtype=np.float64)
 
     idx_q1, idx_q2           = 0, 1
@@ -528,7 +528,7 @@ def _compute_hovorka_analytical_jacobian(
 
     # --- Hovorka core block (unchanged from base model) ---
 
-    # dQ1/d* row — at fasting ETH states are 0 so no exercise terms appear
+    # dQ1/d* row - at fasting ETH states are 0 so no exercise terms appear
     jacobian[0, idx_q1] = -x1 - d_f01c_d_q1 - d_fr_d_q1
     jacobian[0, idx_q2] = k12
     jacobian[0, idx_x1] = -q1
@@ -741,7 +741,7 @@ def estimate_basal_input_from_state(
 
 def get_non_negative_state_indices() -> np.ndarray:
     # Indices 0-9: standard Hovorka states (Q1,Q2,S1,S2,I,x1,x2,x3,D1,D2)
-    # Indices 10-17: ETH exercise states (Y,Z,rGU,rGP,tPA,PAint,rdepl,th) — all non-negative
+    # Indices 10-17: ETH exercise states (Y,Z,rGU,rGP,tPA,PAint,rdepl,th) - all non-negative
     return np.array([0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], dtype=np.int64)
 
 

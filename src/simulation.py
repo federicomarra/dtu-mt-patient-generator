@@ -47,7 +47,7 @@ class DayResult(TypedDict):
     bolus_status: list[str | None]   # 'normal' | 'missed' | 'late' | None
     meal_size: list[str | None]      # 'normal' | 'large' | None
     exercise_type: list[str]         # 'aerobic' | 'anaerobic' | 'prolonged' | 'none'
-    # Deprecated scalar labels — kept for backward compat with analysis scripts
+    # Deprecated scalar labels - kept for backward compat with analysis scripts
     scenario_id: int | None     # = base_scenario
     missed_meal_id: int | None  # first missed-bolus meal slot, or None
     late_bolus_ids: list[int]   # meal slots with late bolus
@@ -124,7 +124,7 @@ def run_simulation(
     now_sim_folder_path = create_export_directory() if any(export_config.to_list()) else None
 
     # Generate an oversized candidate pool; keep first N stable patients.
-    # 10× oversampling ensures the target count is met even at ~40% acceptance rates
+    # 10x oversampling ensures the target count is met even at ~40% acceptance rates
     # (typical for random-scenario runs). Increase further only if rejection rate
     # consistently exceeds 90%, which indicates pathological threshold configuration.
     candidate_multiplier = 10
@@ -165,8 +165,8 @@ def run_simulation(
     quality_max_hyper_pct = config.quality_max_hyper_pct_threshold
 
     if show_summary:
-        print(f"Running Monte Carlo Simulation: {config.n_patients} patients × {config.n_days} days")
-        print(f"CGM noise: σ={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")
+        print(f"Running Monte Carlo Simulation: {config.n_patients} patients x {config.n_days} days")
+        print(f"CGM noise: sigma={config.noise_std:.2f} mmol/L, autocorr={config.noise_autocorr:.2f}")
     
     # Main simulation loop (progress tracks accepted patients)
     desc_text = "\033[34mAccepted patients\033[0m"
@@ -217,7 +217,7 @@ def run_simulation(
             # Compute ICR and ISF (sensitivity factors).
             # Realism knob #1 (ml/docs/SIM_REALISM.md): per-patient glycaemic setpoint +
             # imperfect dosing, so patients are not all calibrated to one target with
-            # perfect ICR/ISF (the homogeniser behind the narrow sim→real spread).
+            # perfect ICR/ISF (the homogeniser behind the narrow sim->real spread).
             cal_target = config.calibration_target_glycemia_mmol
             if config.personalise_glycemic_target:
                 cal_target = float(np.clip(
@@ -243,7 +243,7 @@ def run_simulation(
             # Track state across days
             current_state: np.ndarray = np.array(x0_initial, dtype=np.float64)
 
-            # ── Burn-in (warm-up) ──────────────────────────────────────────────────
+            # -- Burn-in (warm-up) --------------------------------------------------
             # Run n_warmup_days before recording to let ETH exercise states (Y, Z)
             # reach a cyclic steady state.  Negative day cache indices (-n, ..., -1)
             # avoid collisions with recorded day keys (0, ..., n_days-1).
@@ -257,7 +257,7 @@ def run_simulation(
                 _base_sc_override = None if config.random_scenarios else max(1, min(3, int(config.fixed_scenario)))
 
                 for _wu_idx in range(config.n_warmup_days):
-                    _wu_cache_day = _wu_idx - config.n_warmup_days  # -n_warmup_days … -1
+                    _wu_cache_day = _wu_idx - config.n_warmup_days  # -n_warmup_days ... -1
                     _wu_day_insulin[:] = np.nan
                     _wu_day_cho[:] = np.nan
 
@@ -290,7 +290,7 @@ def run_simulation(
                         dy = np.asarray(hovorka_equations(
                             _cm, x_s, patient_params,
                             scenario_with_cached_meals,
-                            scenario=1,  # dead — precomputed_inputs always provided; scenario dispatch already done above
+                            scenario=1,  # dead - precomputed_inputs always provided; scenario dispatch already done above
                             patient_id=sim_patient_id, day=_d,
                             basal_hourly=_beff,
                             insulin_carbo_ratio=_icr_eff,
@@ -341,7 +341,7 @@ def run_simulation(
             _running_max_glucose: float = 0.0
             # Chronic-hypo counter (non-exercise days only): counts days that exceed the soft
             # threshold (quality_max_hypo_pct_soft_threshold). Rejection fires when the count
-            # exceeds quality_max_hypo_bad_nonex_days — see simulation_config.py for rationale.
+            # exceeds quality_max_hypo_bad_nonex_days - see simulation_config.py for rationale.
             _hypo_bad_nonex_day_count: int = 0
             # Base scenario override for fixed-scenario runs
             _base_sc_override = None if config.random_scenarios else max(1, min(3, int(config.fixed_scenario)))
@@ -349,10 +349,10 @@ def run_simulation(
             # Simulate each day
             for day_idx in range(config.n_days):
 
-                # Per-day insulin sensitivity perturbation: ±15% CV, bounded ±35%.
+                # Per-day insulin sensitivity perturbation: +/-15% CV, bounded +/-35%.
                 # Mimics real T1D day-to-day variability (sleep, minor illness, stress).
                 # Scales SI1/SI2/SI3 in patient_params so the ODE closure picks it up.
-                # ISF used in the correction guard is scaled inversely (ISF ∝ 1/SI).
+                # ISF used in the correction guard is scaled inversely (ISF ~ 1/SI).
                 si_day_factor = float(np.clip(rng.normal(1.0, 0.10), 0.78, 1.25))
                 patient_params["SI1"] = _base_SI1 * si_day_factor
                 patient_params["SI2"] = _base_SI2 * si_day_factor
@@ -412,7 +412,7 @@ def run_simulation(
                         x_safe,
                         patient_params,
                         scenario_with_cached_meals,
-                        scenario=1,  # dead — precomputed_inputs always provided; scenario dispatch done above
+                        scenario=1,  # dead - precomputed_inputs always provided; scenario dispatch done above
                         patient_id=sim_patient_id,
                         day=int(day_idx),
                         basal_hourly=basal_hourly_effective,
@@ -485,9 +485,9 @@ def run_simulation(
                 # Apply lagged CGM sensor model point-by-point.
                 # Each call to measure_glycemia (mode="lagged") applies:
                 #   1. First-order CGM physiological lag:
-                #      G_lag(t) = G_disp(t-1) + α_lag * (G_true(t) - G_disp(t-1))
+                #      G_lag(t) = G_disp(t-1) + alpha_lag * (G_true(t) - G_disp(t-1))
                 #   2. AR(1) correlated noise:
-                #      e_t = φ * e_{t-1} + η_t,  η_t ~ N(0, σ²(1-φ²))
+                #      e_t = phi * e_{t-1} + eta_t,  eta_t ~ N(0, sigma^2(1-phi^2))
                 #      G_meas(t) = G_lag(t) + e_t
                 # sensor_cgm_state carries display/error across day boundaries.
                 available_points = min(n_measurements, state_trajectory.shape[1])
@@ -688,7 +688,7 @@ def run_simulation(
             # Quality: per-day exercise-aware rejection.
             # Base threshold depends on whether the day had exercise (sc2 base or sc7/sc8 overlay).
             # The spillover bonus is applied for each exercise day in the 2-day lookback window:
-            # the Z state (tau_Z≈600 min) retains ~40% after 1 day and ~9% after 2 days, so
+            # the Z state (tau_Z~600 min) retains ~40% after 1 day and ~9% after 2 days, so
             # consecutive exercise days pre-load Z and each contributes independently.
             # Also enforce a hard minimum glucose floor across all days.
             _quality_hypo_fail  = False
@@ -935,8 +935,8 @@ def run_simulation(
     if config.enable_plots:
         plt.title(  # type: ignore[misc]
             f"Hovorka Model Monte Carlo Simulation\n"
-            f"{accepted_patients} accepted / {sampled_patients} sampled patients × {config.n_days} days, "
-            f"CGM noise σ={config.noise_std:.2f} mmol/L",
+            f"{accepted_patients} accepted / {sampled_patients} sampled patients x {config.n_days} days, "
+            f"CGM noise sigma={config.noise_std:.2f} mmol/L",
             fontsize=13,
             fontweight='bold'
         )
@@ -1051,7 +1051,7 @@ def run_simulation(
 
         ax_ins.set_title(
             f"Insulin And Carbohydrate Input Signals\n"
-            f"{accepted_patients} accepted / {sampled_patients} sampled patients × {config.n_days} days",
+            f"{accepted_patients} accepted / {sampled_patients} sampled patients x {config.n_days} days",
             fontsize=13,
             fontweight='bold',
         )

@@ -2,7 +2,7 @@
 """
 Remove day-boundary duplicate rows from a simulation parquet file.
 
-Each day was simulated with np.arange(0, 1441) — 1441 points — so the
+Each day was simulated with np.arange(0, 1441) - 1441 points - so the
 last row of day N (absolute_minute=(N+1)*1440) is the same physiological
 state as the first row of day N+1. This script drops those trailing rows,
 leaving exactly 1440 rows per (patient, day).
@@ -69,14 +69,14 @@ def fix_boundaries(input_path: Path, output_path: Path) -> None:
     if writer:
         writer.close()  # type: ignore[union-attr]
 
-    print(f"\nDone.")
+    print("\nDone.")
     print(f"  Rows in:      {total_in:,}")
     print(f"  Rows dropped: {total_dropped:,}")
     print(f"  Rows out:     {total_written:,}")
     if total_written % 1440 == 0:
-        print(f"  Check: OK — {total_written // 1440:,} patient-days × 1440 min")
+        print(f"  Check: OK - {total_written // 1440:,} patient-days x 1440 min")
     else:
-        print(f"  Check: WARNING — {total_written:,} rows is not a multiple of 1440")
+        print(f"  Check: WARNING - {total_written:,} rows is not a multiple of 1440")
 
 
 if __name__ == "__main__":
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else input_path.with_stem(input_path.stem + "_clean")
 
     if output_path.exists():
-        print(f"Error: {output_path} already exists — delete it first to avoid accidents")
+        print(f"Error: {output_path} already exists - delete it first to avoid accidents")
         sys.exit(1)
 
     fix_boundaries(input_path, output_path)

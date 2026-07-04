@@ -91,8 +91,8 @@ if __name__ == "__main__":
     plt.xlabel("Time (hours)", fontsize=12)  # type: ignore[misc]
     plt.ylabel("Blood Glucose (mmol/L)", fontsize=12)  # type: ignore[misc]
     plt.title(  # type: ignore[misc]
-        f"Parallel Library — {len(patient_ids)} patients × {config.n_days} days\n"
-        f"CGM noise σ={config.noise_std:.2f} mmol/L  |  random_scenarios=True",
+        f"Parallel Library - {len(patient_ids)} patients x {config.n_days} days\n"
+        f"CGM noise sigma={config.noise_std:.2f} mmol/L  |  random_scenarios=True",
         fontsize=13, fontweight="bold",
     )
     plt.legend(loc="best", framealpha=0.9, fontsize=10)  # type: ignore[misc]

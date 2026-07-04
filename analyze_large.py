@@ -22,7 +22,7 @@ import pandas as pd  # type: ignore[import-untyped]
 import numpy as np
 
 
-# ── Thresholds (mg/dL; auto-detected below) ──────────────────────────────────
+# -- Thresholds (mg/dL; auto-detected below) ----------------------------------
 HYPO_MGDL  = 70.0
 HYPER_MGDL = 180.0
 HYPO_MMOL  = 3.9
@@ -112,10 +112,10 @@ def analyze(file_path: Path) -> None:
         print("Seed:       n/a (not found in nearby config sidecar)")
     print(f"{'='*70}\n")
 
-    # ── Detect unit from first row group ─────────────────────────────────────
+    # -- Detect unit from first row group -------------------------------------
     first_batch = cast(pd.DataFrame, pf.read_row_group(0, columns=["blood_glucose"]).to_pandas())  # type: ignore[union-attr]
     # mmol/L physiological ceiling is ~33 mmol/L (instability threshold 30.53 + sensor noise).
-    # mg/dL values are always ≥ 18× higher (e.g. 50 mg/dL = 2.8 mmol/L minimum).
+    # mg/dL values are always >= 18x higher (e.g. 50 mg/dL = 2.8 mmol/L minimum).
     # Threshold at 50 safely separates the two unit spaces.
     is_mgdl = float(first_batch["blood_glucose"].max()) > 50
     unit = "mg/dL" if is_mgdl else "mmol/L"
@@ -124,7 +124,7 @@ def analyze(file_path: Path) -> None:
     guard_thr = GUARD_MGDL if is_mgdl else GUARD_MMOL
     print(f"Detected unit: {unit}  |  hypo <{hypo_thr}  hyper >{hyper_thr}\n")
 
-    # ── Accumulators ─────────────────────────────────────────────────────────
+    # -- Accumulators ---------------------------------------------------------
     glc_stats = OnlineStats()
     glc_sample: list[np.ndarray] = []   # reservoir for percentile estimate
     SAMPLE_TARGET = 500_000             # ~4 MB of floats
@@ -257,7 +257,7 @@ def analyze(file_path: Path) -> None:
         if "patient_id" in chunk.columns:
             patient_ids.update(chunk["patient_id"].unique().tolist())
 
-        # ages — sample a few per row group to keep memory trivial
+        # ages - sample a few per row group to keep memory trivial
         if "patient_age_years" in chunk.columns and rg_idx % 10 == 0:
             ages.extend(chunk["patient_age_years"].dropna().iloc[::1000].tolist())
 
@@ -268,44 +268,44 @@ def analyze(file_path: Path) -> None:
 
     total = glc_stats.n
 
-    # ── Percentile estimate from reservoir sample ─────────────────────────────
+    # -- Percentile estimate from reservoir sample -----------------------------
     sample_arr = np.concatenate(glc_sample) if glc_sample else np.array([])
     p5  = float(np.percentile(sample_arr, 5))  if sample_arr.size else float("nan")
     p95 = float(np.percentile(sample_arr, 95)) if sample_arr.size else float("nan")
 
-    # ── Print results ─────────────────────────────────────────────────────────
+    # -- Print results ---------------------------------------------------------
     # Min/max are exact (every value compared); mean/std are exact via Welford.
     # Min can appear below physiological hypo thresholds because blood_glucose
     # is the CGM sensor reading: AR(1) noise + 5-min delay means the signal
     # can transiently undershoot the true interstitial glucose during a rapid
     # fall, producing values lower than the underlying ODE state.
-    # CV% = (std / mean) × 100: measures relative glucose variability.
+    # CV% = (std / mean) x 100: measures relative glucose variability.
     # In CGM literature CV% around 36% indicates high variability; the cohort
-    # target is 20–40% to reflect realistic T1D glycemic fluctuation.
+    # target is 20-40% to reflect realistic T1D glycemic fluctuation.
     print(f"=== Glucose Statistics ({unit}) ===")
     print(f"  Patients:  {len(patient_ids):,}")
-    print(f"  Min:       {glc_stats.mn:.1f}  (CGM signal — noise+delay can undershoot true glucose)")
+    print(f"  Min:       {glc_stats.mn:.1f}  (CGM signal - noise+delay can undershoot true glucose)")
     print(f"  Max:       {glc_stats.mx:.1f}")
     print(f"  Mean:      {glc_stats.mean:.1f}")
     print(f"  Std:       {glc_stats.std:.1f}")
-    print(f"  CV%:       {glc_stats.cv_pct:.1f}  (std/mean×100)")
+    print(f"  CV%:       {glc_stats.cv_pct:.1f}  (std/meanx100)")
     print(f"  P5/P95*:   {p5:.2f} / {p95:.2f}  (*sampled estimate)")
 
     if ages:
         age_arr = np.array(ages)
-        print(f"\n=== Age Distribution ===")
+        print("\n=== Age Distribution ===")
         print(f"  Mean: {age_arr.mean():.1f} yr   Std: {age_arr.std():.1f} yr   "
               f"Min: {age_arr.min():.0f}   Max: {age_arr.max():.0f}")
 
     print(f"\n=== Glycemic Control (total {total:,} min-points) ===")
     print(f"  Hypoglycemia  (<{hypo_thr:.1f}):  {hypo_n:>12,}  ({100*hypo_n/total:5.1f}%)")
-    print(f"  In Range ({hypo_thr:.1f}–{hyper_thr:.1f}):  {in_range_n:>12,}  ({100*in_range_n/total:5.1f}%)")
+    print(f"  In Range ({hypo_thr:.1f}-{hyper_thr:.1f}):  {in_range_n:>12,}  ({100*in_range_n/total:5.1f}%)")
     print(f"  Hyperglycemia (>{hyper_thr:.1f}): {hyper_n:>12,}  ({100*hyper_n/total:5.1f}%)")
     print(f"\n  Guard threshold ({guard_thr:.1f} {unit}):    "
           f"{guard_n:>12,}  ({100*guard_n/total:5.1f}%)")
 
     if day_counts:
-        print(f"\n=== Time in Range by Day ===")
+        print("\n=== Time in Range by Day ===")
         print(f"  {'Day':<5} {'TIR%':>8} {'Hypo%':>8} {'Hyper%':>8} {'Points':>12}")
         print("  " + "-" * 44)
         for day in sorted(day_counts):
@@ -313,7 +313,7 @@ def analyze(file_path: Path) -> None:
             print(f"  {day:<5} {100*ir/tot:7.1f}% {100*h/tot:7.1f}% {100*hi/tot:7.1f}% {tot:>12,}")
 
     if scen_counts:
-        print(f"\n=== Per-Base-Scenario Glycemic Profile ===")
+        print("\n=== Per-Base-Scenario Glycemic Profile ===")
         print(f"  {'Scen':<5} {'Name':<18} {'Points':>12} {'TIR%':>7} {'Hypo%':>7} {'Hyper%':>7} {'Mean':>7}")
         print("  " + "-" * 66)
         for sid in sorted(scen_counts):
@@ -348,7 +348,7 @@ def analyze(file_path: Path) -> None:
             cnt = lbl_dict[val]
             print(f"  {str(val):<20} {cnt:>12,}  ({100*cnt/lbl_total:5.1f}%)")
 
-    # ── ML readiness summary ──────────────────────────────────────────────────
+    # -- ML readiness summary --------------------------------------------------
     print(f"\n{'='*70}")
     print("ML READINESS ASSESSMENT")
     print(f"{'='*70}")
@@ -358,14 +358,14 @@ def analyze(file_path: Path) -> None:
     hyper_pct = 100 * hyper_n / total
 
     # TIR target for closed-loop simulation: the safety stack (hypo guard,
-    # rescue bolus, ISF correction) actively maintains glucose, so TIR ≥85%
-    # is the expected baseline — real-patient TIR targets (55–80%) do not apply.
+    # rescue bolus, ISF correction) actively maintains glucose, so TIR >=85%
+    # is the expected baseline - real-patient TIR targets (55-80%) do not apply.
     all_base_scens = all(i in scen_counts for i in (1, 2, 3))
     all_bolus_labels = all(v in bolus_status_counts for v in ("normal", "missed", "late"))
     all_exercise_labels = all(v in exercise_type_counts for v in ("aerobic", "anaerobic", "prolonged", "none"))
     checks: list[tuple[str, bool, str]] = [
-        ("Patients ≥ 1000",              len(patient_ids) >= 1000,    f"{len(patient_ids):,}"),
-        ("TIR ≥55% (closed-loop)",       tir_pct >= 55,               f"{tir_pct:.1f}%"),
+        ("Patients >= 1000",              len(patient_ids) >= 1000,    f"{len(patient_ids):,}"),
+        ("TIR >=55% (closed-loop)",       tir_pct >= 55,               f"{tir_pct:.1f}%"),
         ("Hypo < 5%",                    hypo_pct < 5,                f"{hypo_pct:.1f}%"),
         ("Hyper < 30%",                  hyper_pct < 30,              f"{hyper_pct:.1f}%"),
         ("CV% 30-45% (variability)",     30 <= glc_stats.cv_pct <= 45, f"{glc_stats.cv_pct:.1f}%"),

@@ -120,10 +120,10 @@ def apply_hypo_rescue_to_derivative(
     """Mutate ODE derivative with gut-delivered rescue carbs when rescue is active.
 
     Two-tier rescue (ADA/Battelino 2019):
-      L1 (≤ hypo_rescue_trigger_mmol, default 3.9): 15 g fast carbs, 45-min cooldown.
+      L1 (<= hypo_rescue_trigger_mmol, default 3.9): 15 g fast carbs, 45-min cooldown.
           Fires simultaneously with the hypo guard basal suspend.
-      L2 (≤ hypo_rescue_l2_trigger_mmol, default 3.0): 30 g carbs, 60-min cooldown.
-          Independent cooldown — L2 can fire even while L1 cooldown is active, because
+      L2 (<= hypo_rescue_l2_trigger_mmol, default 3.0): 30 g carbs, 60-min cooldown.
+          Independent cooldown - L2 can fire even while L1 cooldown is active, because
           at <3.0 mmol/L waiting is not acceptable.
     Both tiers can be active simultaneously; their carb rates are summed.
     """

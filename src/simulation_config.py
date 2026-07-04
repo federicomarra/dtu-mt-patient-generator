@@ -11,9 +11,9 @@ class SimulationConfig:
     n_patients: int = 100
     n_days: int = 14   # tuning batch matches the 14-day cohort; raise to 42-56 for the scale run
     international_unit: bool = True
-    noise_std: float = 0.33  # real Dexcom/Libre MARD 8-10% → ±0.56-0.70 mmol/L at 7 mmol/L mean; AR(1) stationary std = noise_std
-    noise_autocorr: float = 0.7   # AR(1) φ coefficient for the lagged CGM noise model
-    cgm_lag_alpha: float = 0.25   # first-order CGM lag blend factor (0 < α ≤ 1); 0.25 ≈ 4-min physiological lag
+    noise_std: float = 0.33  # real Dexcom/Libre MARD 8-10% -> +/-0.56-0.70 mmol/L at 7 mmol/L mean; AR(1) stationary std = noise_std
+    noise_autocorr: float = 0.7   # AR(1) phi coefficient for the lagged CGM noise model
+    cgm_lag_alpha: float = 0.25   # first-order CGM lag blend factor (0 < alpha <= 1); 0.25 ~ 4-min physiological lag
     random_scenarios: bool = False
     fixed_scenario: int = 1  # base scenario for all patients when random_scenarios=False: 1=normal, 2=active aerobic, 3=sedentary
     clip_states: bool = True
@@ -21,32 +21,32 @@ class SimulationConfig:
     random_seed: Optional[int] = None
     basal_hourly: float = 0.5
     use_calibrated_basal: bool = True
-    initial_target_glucose_mgdl: float = 126.0  # ~7.0 mmol/L: upper end of ADA pre-meal target (80–130 mg/dL); representative of real-world T1D moderate control rather than near-euglycaemic lab conditions
+    initial_target_glucose_mgdl: float = 126.0  # ~7.0 mmol/L: upper end of ADA pre-meal target (80-130 mg/dL); representative of real-world T1D moderate control rather than near-euglycaemic lab conditions
     initial_glucose_acceptance_min_mmol: float = 4.5
     initial_glucose_acceptance_max_mmol: float = 7.2
-    instability_max_glucose_mmol: float = 33.3   # 600 mg/dL / 18.016 — raised from 550 to reduce
+    instability_max_glucose_mmol: float = 33.3   # 600 mg/dL / 18.016 - raised from 550 to reduce
     # rejection from cortisol/dawn-driven single-day peaks while remaining within
     # physiologically possible T1D range (DKA onset >600 mg/dL)
-    instability_hyper_pct_threshold: float = 75.0   # raised 60→75: admit realistic moderate-control patients (sim→real gap: real hyper 22–39% vs sim 17%); cumulative gate that bites long horizons
+    instability_hyper_pct_threshold: float = 75.0   # raised 60->75: admit realistic moderate-control patients (sim->real gap: real hyper 22-39% vs sim 17%); cumulative gate that bites long horizons
     # Rejection thresholds applied on a worst-day basis (see simulation.py rejection logic).
     # Any day where an exercise session is scheduled (regardless of base_scenario) uses
     # the _exercise variants because physiological hypo during/after vigorous exercise is
     # expected and the rescue system handles it.
     #
     # NOTE (thesis): Under the stochastic exercise model, 'active' patients (base_scenario=2)
-    # exercise on P ∈ [0.55, 0.80] of days rather than every day.  This removes the
+    # exercise on P in [0.55, 0.80] of days rather than every day.  This removes the
     # chronic ETH Z-state buildup that caused ~15-20% acceptance rates under the old
     # guaranteed-daily-exercise SC2 regime.  Acceptance rates should approach mixed-scenario
     # levels (~45%) even when fixed_scenario=2.  The old finding (every-day aerobic = chronic
     # Z-state hypo) remains physiologically valid and is now an emergent property for the
     # unlucky tail of active patients with high exercise_daily_prob AND high intensity_bias.
     # Two-tier hypo rejection for non-exercise days (sc1,3,4,5,6):
-    #   Tier 1 — per-day hard cap: reject immediately if any non-exercise day exceeds
+    #   Tier 1 - per-day hard cap: reject immediately if any non-exercise day exceeds
     #     quality_max_hypo_pct_threshold (15%). A single terrible day at 15% TBR (216 min in
     #     hypo) sits at the outer edge of what literature documents for T1D adults without exercise
     #     (Battelino 2019 consensus: >10% = attention threshold, >25% = high risk). Values above
     #     15% on a non-exercise day indicate a fundamental dosing or sensitivity problem.
-    #   Tier 2 — chronic pattern check: count non-exercise days that exceed
+    #   Tier 2 - chronic pattern check: count non-exercise days that exceed
     #     quality_max_hypo_pct_soft_threshold (10%). Reject if more than
     #     quality_max_hypo_bad_nonex_days (3) such days occur across the simulation. Up to two
     #     rough non-exercise days is physiologically realistic for active patients (some follow
@@ -56,28 +56,28 @@ class SimulationConfig:
     # (17%) plus the spillover bonuses and does NOT count toward the non-exercise
     # chronic-pattern check.  Exercise days are determined by day_plan.is_exercise_day
     # (exercise is not None), regardless of base_scenario.
-    # Ordering coherence: exercise max (17–21% with spillover) > non-exercise hard cap (15%) ✓
-    quality_max_hypo_pct_threshold: float = 23.0          # 15→23: non-exercise per-day hard cap raised for the 42-day scale horizon (more days = more chances to trip the gate; avoids discarding a 30-day-deep sim over one bad late day). 23% TBR sits just under Battelino 25% high-risk line; chronic counter (soft 10%/3 days) still rejects pathological patients
+    # Ordering coherence: exercise max (17-21% with spillover) > non-exercise hard cap (15%) [ok]
+    quality_max_hypo_pct_threshold: float = 23.0          # 15->23: non-exercise per-day hard cap raised for the 42-day scale horizon (more days = more chances to trip the gate; avoids discarding a 30-day-deep sim over one bad late day). 23% TBR sits just under Battelino 25% high-risk line; chronic counter (soft 10%/3 days) still rejects pathological patients
     quality_max_hypo_pct_soft_threshold: float = 10.0     # counting threshold for chronic-pattern check
-    quality_max_hypo_bad_nonex_days: int = 7              # 3→7: horizon-scaled for 42d (3/14 ≈ 7/42). At 14d this gate fired 0.6% of rejections; at 42d it rose to ~6% and fired late (days 17-36), discarding deep sims. 7 keeps the same proportional leniency. Validated on 50×42 trial.
-    # Raised from 2→3: under the stochastic exercise model active patients have only ~2-3
+    quality_max_hypo_bad_nonex_days: int = 7              # 3->7: horizon-scaled for 42d (3/14 ~ 7/42). At 14d this gate fired 0.6% of rejections; at 42d it rose to ~6% and fired late (days 17-36), discarding deep sims. 7 keeps the same proportional leniency. Validated on 50x42 trial.
+    # Raised from 2->3: under the stochastic exercise model active patients have only ~2-3
     # non-exercise days per 7-day run, and ~1-2 of those immediately follow an exercise day
     # carrying Z spillover (~1.6 mmol/L overnight glucose drop for aerobic, ~2.3 for prolonged).
     # A limit of 2 left almost no headroom for the active patient subgroup.
-    quality_max_hypo_pct_exercise_threshold: float = 25.0   # 17→25: keeps ordering exercise(25) ≥ non-exercise(23) for the 42-day horizon. NOTE: spillover bonus (+2/exercise day in 2-day lookback) can lift the effective cap to ~29% on back-to-back exercise days — aggressive but a single-worst-day cap, not a cohort average; dial spillover down if 42d trial over-admits
+    quality_max_hypo_pct_exercise_threshold: float = 25.0   # 17->25: keeps ordering exercise(25) >= non-exercise(23) for the 42-day horizon. NOTE: spillover bonus (+2/exercise day in 2-day lookback) can lift the effective cap to ~29% on back-to-back exercise days - aggressive but a single-worst-day cap, not a cohort average; dial spillover down if 42d trial over-admits
     # Bonus added to the hypo threshold per exercise day found in the 2-day lookback window.
-    # The Z state (tau_Z≈600 min, Z_max=0.2) retains ~24% of Z_max at the start of the
+    # The Z state (tau_Z~600 min, Z_max=0.2) retains ~24% of Z_max at the start of the
     # following calendar day (~9h post-session), causing an integrated ~1.6 mmol/L overnight
     # glucose drop for aerobic and ~2.3 mmol/L for prolonged sessions.  The 2% bonus is now
     # conservative (was calibrated at Z_max=0.4 where the overnight drop was ~5 mmol/L), but
     # erring on the side of acceptance is correct.
     # Each exercise day in the [d-2, d-1] window contributes this bonus independently:
-    #   non-ex→exercise→any:      base + 2%  (d-1 spillover)
-    #   exercise→non-ex→any:      base + 2%  (d-2 spillover; Z ~0.5% of Z_max at 48h)
-    #   exercise→exercise→non-ex: 17% + 2% + 2% = 21%
-    #   exercise→exercise→exercise: 17% + 2% + 2% = 21%
+    #   non-ex->exercise->any:      base + 2%  (d-1 spillover)
+    #   exercise->non-ex->any:      base + 2%  (d-2 spillover; Z ~0.5% of Z_max at 48h)
+    #   exercise->exercise->non-ex: 17% + 2% + 2% = 21%
+    #   exercise->exercise->exercise: 17% + 2% + 2% = 21%
     quality_max_hypo_pct_spillover_bonus: float = 2.0
-    quality_max_hyper_pct_threshold: float = 95.0   # 90→95 (realism knob #1, ml/docs/SIM_REALISM.md): admit the poorly-controlled tail that therapy heterogeneity now produces, so v.hyper% per-patient spread widens 14→19 (real ohio~12/hupa~22). Earlier: 85→90 lifted cohort hyper toward Ohio. Keep instability gates (75/33.3mmol) as-is — they are the solver's stiff-ODE guard; relaxing them admits near-DKA patients that grind RK45.
+    quality_max_hyper_pct_threshold: float = 95.0   # 90->95 (realism knob #1, ml/docs/SIM_REALISM.md): admit the poorly-controlled tail that therapy heterogeneity now produces, so v.hyper% per-patient spread widens 14->19 (real ohio~12/hupa~22). Earlier: 85->90 lifted cohort hyper toward Ohio. Keep instability gates (75/33.3mmol) as-is - they are the solver's stiff-ODE guard; relaxing them admits near-DKA patients that grind RK45.
     # Hard floor: reject if glucose drops below this at any point regardless of hypo%.
     # Set to 36 mg/dL (= 2.0 mmol/L). With the tighter safety stack (guard 3.9, L1 rescue
     # 3.9, L2 rescue 3.0) floor breaches should be rare; the floor guards against the tail
@@ -90,17 +90,17 @@ class SimulationConfig:
     n_warmup_days: int = 3
 
     enable_hypo_guard: bool = True
-    hypo_guard_mmol: float = 3.6           # 3.9→3.6: let glucose ride lower before suspend → more time-below-range (sim→real gap: real hypo 2.5-8.5% vs sim 1.5%); still above L2 3.0 floor
+    hypo_guard_mmol: float = 3.6           # 3.9->3.6: let glucose ride lower before suspend -> more time-below-range (sim->real gap: real hypo 2.5-8.5% vs sim 1.5%); still above L2 3.0 floor
     hypo_guard_suspend_min: int = 20
     hypo_guard_retrigger_cooldown_min: int = 20
     suppress_meal_bolus_on_guard: bool = False
 
     # Two-tier hypo rescue (ADA/Battelino 2019):
-    #   L1 (3.0–3.9 mmol/L): treat with 15 g fast carbs, suspend basal (guard already fires simultaneously)
+    #   L1 (3.0-3.9 mmol/L): treat with 15 g fast carbs, suspend basal (guard already fires simultaneously)
     #   L2 (<3.0 mmol/L):    treat with 30 g carbs; independent cooldown so L2 can fire
-    #                         even if L1 recently fired — at 3.0 you do not wait.
+    #                         even if L1 recently fired - at 3.0 you do not wait.
     enable_hypo_rescue: bool = True
-    hypo_rescue_trigger_mmol: float = 3.6  # 3.9→3.6: fires later (same as guard) → glucose accumulates more hypo minutes before carb rescue, widening σ and lifting hypo% toward real
+    hypo_rescue_trigger_mmol: float = 3.6  # 3.9->3.6: fires later (same as guard) -> glucose accumulates more hypo minutes before carb rescue, widening sigma and lifting hypo% toward real
     hypo_rescue_carbs_g: float = 15.0
     hypo_rescue_duration_min: int = 15
     hypo_rescue_retrigger_cooldown_min: int = 45
@@ -121,22 +121,22 @@ class SimulationConfig:
 
     # Target glucose for ICR/ISF bisection calibration [mmol/L].
     # At 5.5 mmol/L (euglycaemia), ICR/ISF are tuned to return glucose to near-normal after
-    # every meal/correction — producing overly well-controlled virtual patients (TIR ~89%,
+    # every meal/correction - producing overly well-controlled virtual patients (TIR ~89%,
     # hyper ~7%). Raising to 6.5 mmol/L calibrates ICR to deliver less insulin per gram of
     # carbs (stopping at a higher post-meal plateau) and ISF to correct less aggressively,
-    # producing sustained post-meal excursions above 10 mmol/L consistent with HbA1c ~7.5–8%
+    # producing sustained post-meal excursions above 10 mmol/L consistent with HbA1c ~7.5-8%
     # and real-world T1D moderate control (T1D Exchange 2016 median HbA1c 8.4%).
-    calibration_target_glycemia_mmol: float = 7.5   # 6.5→7.5: ICR delivers less insulin/carb → higher post-meal plateaus → more hyper (closes sim→real gap; iterate via gap_assess)
+    calibration_target_glycemia_mmol: float = 7.5   # 6.5->7.5: ICR delivers less insulin/carb -> higher post-meal plateaus -> more hyper (closes sim->real gap; iterate via gap_assess)
 
-    # Per-patient therapy heterogeneity (sim→real realism knob #1; ml/docs/SIM_REALISM.md).
+    # Per-patient therapy heterogeneity (sim->real realism knob #1; ml/docs/SIM_REALISM.md).
     # The simulator otherwise calibrates EVERY patient to calibration_target_glycemia_mmol
-    # with perfect ICR/ISF → homogeneous outcomes (narrow per-patient mean/TIR/hypo/hyper
-    # spread, the measured sim→real gap). These toggles restore inter-patient spread using
+    # with perfect ICR/ISF -> homogeneous outcomes (narrow per-patient mean/TIR/hypo/hyper
+    # spread, the measured sim->real gap). These toggles restore inter-patient spread using
     # the per-patient draws sampled in parameters.py (magnitudes are module constants there):
-    #   personalise_glycemic_target — offset each patient's calibration setpoint
+    #   personalise_glycemic_target - offset each patient's calibration setpoint
     #     (spreads controlled mean glucose / TIR; keeps each patient internally well-dosed).
-    #   therapy_miscalibration — multiply post-bisection ICR/ISF by a per-patient factor
-    #     (imperfect dosing → wider hypo/hyper tails + per-patient volatility).
+    #   therapy_miscalibration - multiply post-bisection ICR/ISF by a per-patient factor
+    #     (imperfect dosing -> wider hypo/hyper tails + per-patient volatility).
     # Both default ON; ablate by setting either False. Target clipped to [6.0, 9.5].
     personalise_glycemic_target: bool = True
     glycemic_target_min_mmol: float = 6.0
@@ -154,7 +154,7 @@ class SimulationConfig:
     cgm_min_glucose_mmol: float = 1.5
 
     enable_correction_isf: bool = True
-    correction_isf_target_mmol: float = 13.0  # 10.5→13.0 (~234 mg/dL): correct only severe hyper so realistic sustained post-meal excursions survive instead of being clawed back (sim→real gap: sim under-represents hyper). IOB guard still prevents double-dosing.
+    correction_isf_target_mmol: float = 13.0  # 10.5->13.0 (~234 mg/dL): correct only severe hyper so realistic sustained post-meal excursions survive instead of being clawed back (sim->real gap: sim under-represents hyper). IOB guard still prevents double-dosing.
     correction_isf_check_interval_min: int = 5
     correction_isf_cooldown_min: int = 90
     correction_isf_max_bolus_units: float = 2.0

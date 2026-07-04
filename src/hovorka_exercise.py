@@ -11,13 +11,13 @@ class ETHExerciseTerms(TypedDict):
     """
 
     # --- State derivatives ---
-    dY: float       # d/dt of short-term PA insulin sensitivity accumulator [count·min/min]
-    dZ: float       # d/dt of long-term post-exercise SI elevation [count·min/min]
-    drGU: float     # d/dt of exercise glucose utilization rate [1/min²]
-    drGP: float     # d/dt of exercise glucose production rate [1/min²]
+    dY: float       # d/dt of short-term PA insulin sensitivity accumulator [count*min/min]
+    dZ: float       # d/dt of long-term post-exercise SI elevation [count*min/min]
+    drGU: float     # d/dt of exercise glucose utilization rate [1/min^2]
+    drGP: float     # d/dt of exercise glucose production rate [1/min^2]
     dtPA: float     # d/dt of PA tracking state [-/min]
     dPAint: float   # d/dt of cumulative PA intensity integral [count/min]
-    drdepl: float   # d/dt of glycogen depletion rate [1/min²]
+    drdepl: float   # d/dt of glycogen depletion rate [1/min^2]
     dth: float      # d/dt of high-intensity duration accumulator [-/min]
 
     # --- Hovorka Q1 interaction terms ---
@@ -47,44 +47,44 @@ def compute_eth_exercise_terms(
     (data_patients/ in gitlab.com/csb.ethz/t1d-exercise-model).
 
     State vector (8 new states replacing Rashid E1/E2/TE):
-      Y      — short-term PA insulin sensitivity, driven by AC with τ=tau_AC (~5 min)
-      Z      — long-term post-exercise SI elevation, decays with τ=tau_Z (~600 min = 10h)
-      rGU    — exercise glucose utilization rate [1/min]
-      rGP    — exercise glucose production rate [1/min]
-      tPA    — PA tracking state (1 = active, 0 = rest)
-      PAint  — cumulative PA intensity integral [count·min], drives glycogen depletion
-      rdepl  — glycogen depletion rate [1/min], limits EGP as exercise prolongs
-      th     — high-intensity duration accumulator, drives aerobic→anaerobic transition
+      Y      - short-term PA insulin sensitivity, driven by AC with tau=tau_AC (~5 min)
+      Z      - long-term post-exercise SI elevation, decays with tau=tau_Z (~600 min = 10h)
+      rGU    - exercise glucose utilization rate [1/min]
+      rGP    - exercise glucose production rate [1/min]
+      tPA    - PA tracking state (1 = active, 0 = rest)
+      PAint  - cumulative PA intensity integral [count*min], drives glycogen depletion
+      rdepl  - glycogen depletion rate [1/min], limits EGP as exercise prolongs
+      th     - high-intensity duration accumulator, drives aerobic->anaerobic transition
 
     Input:
-      ac_t  — accelerometer counts at current minute (0 = rest, ~1000 = moderate, ~5600+ = high)
-      x1    — Hovorka insulin action state for glucose disposal [1/min]
-      Q1    — Hovorka glucose compartment 1 [mmol]
+      ac_t  - accelerometer counts at current minute (0 = rest, ~1000 = moderate, ~5600+ = high)
+      x1    - Hovorka insulin action state for glucose disposal [1/min]
+      Q1    - Hovorka glucose compartment 1 [mmol]
 
     Parameter prefix: "eth_*" in the patient ParameterSet.
 
     NOTE: Anaerobic parameters (eth_q3h, eth_q4h, eth_q5, eth_q6) are marked
-    EXPERIMENTAL — they are not validated on T1D patients and use population-level
+    EXPERIMENTAL - they are not validated on T1D patients and use population-level
     values from params_standard.csv as a physiologically plausible starting point.
     """
     # --- Extract parameters ---
-    tau_AC = max(1.0, float(params["eth_tau_AC"]))   # [min] AC → Y time constant (≈5 min)
-    b      = max(0.0, float(params["eth_b"]))         # [1/(count·min)] Z drive coefficient
+    tau_AC = max(1.0, float(params["eth_tau_AC"]))   # [min] AC -> Y time constant (~5 min)
+    b      = max(0.0, float(params["eth_b"]))         # [1/(count*min)] Z drive coefficient
     tau_Z  = max(1.0, float(params["eth_tau_Z"]))     # [min] long-term SI decay (~600 min)
     # EXPERIMENTAL: multi-day Z cap (not in original Deichmann et al. 2023 paper).
-    # Prevents unbounded cross-day accumulation by saturating the Z drive as Z → Z_max.
+    # Prevents unbounded cross-day accumulation by saturating the Z drive as Z -> Z_max.
     Z_max  = max(1e-3, float(params.get("eth_Z_max", float("inf"))))
-    q1     = max(0.0, float(params["eth_q1"]))        # [1/(count·min²)] rGU drive
+    q1     = max(0.0, float(params["eth_q1"]))        # [1/(count*min^2)] rGU drive
     q2     = max(0.0, float(params["eth_q2"]))        # [1/min] rGU decay
-    q3l    = max(0.0, float(params["eth_q3l"]))       # rGP drive — aerobic (T1D-validated)
-    q4l    = max(0.0, float(params["eth_q4l"]))       # rGP decay — aerobic (T1D-validated)
-    q3h    = max(0.0, float(params["eth_q3h"]))       # rGP drive — anaerobic (EXPERIMENTAL)
-    q4h    = max(0.0, float(params["eth_q4h"]))       # rGP decay — anaerobic (EXPERIMENTAL)
+    q3l    = max(0.0, float(params["eth_q3l"]))       # rGP drive - aerobic (T1D-validated)
+    q4l    = max(0.0, float(params["eth_q4l"]))       # rGP decay - aerobic (T1D-validated)
+    q3h    = max(0.0, float(params["eth_q3h"]))       # rGP drive - anaerobic (EXPERIMENTAL)
+    q4h    = max(0.0, float(params["eth_q4h"]))       # rGP decay - anaerobic (EXPERIMENTAL)
     q5     = max(0.0, float(params["eth_q5"]))        # [1/min] th decay rate (EXPERIMENTAL)
     q6     = max(0.0, float(params["eth_q6"]))        # [1/min] glycogen depletion rate
     adepl  = float(params["eth_adepl"])               # [min/count] depletion threshold slope
-    bdepl  = max(1.0, float(params["eth_bdepl"]))     # [count·min] depletion threshold intercept
-    aY     = max(1.0, float(params["eth_aY"]))        # [count·min] fY half-saturation
+    bdepl  = max(1.0, float(params["eth_bdepl"]))     # [count*min] depletion threshold intercept
+    aY     = max(1.0, float(params["eth_aY"]))        # [count*min] fY half-saturation
     aAC    = max(1.0, float(params["eth_aAC"]))       # [count] fAC half-saturation
     ah     = max(1.0, float(params["eth_ah"]))        # [count] high-intensity threshold
     n1     = max(1.0, float(params["eth_n1"]))        # [-] fY Hill coefficient
@@ -97,11 +97,11 @@ def compute_eth_exercise_terms(
     Z_s      = max(0.0, Z)
     rGU_s    = max(0.0, rGU)
     # rGP_s is capped at 0.025 to prevent multiplicative Q1 runaway during anaerobic exercise.
-    # Physiological ceiling: hepatic anaerobic glycogenolysis raises EGP by at most 2-3× above
-    # basal (~1.3 mmol/min), so the additional production term rGP*Q1 ≤ 0.025×84mmol ≈ 2.1 mmol/min.
-    # Without this cap, q3h (2.6× aerobic q3l) drives rGP to ~0.149 at AC=9000, producing a
+    # Physiological ceiling: hepatic anaerobic glycogenolysis raises EGP by at most 2-3x above
+    # basal (~1.3 mmol/min), so the additional production term rGP*Q1 <= 0.025x84mmol ~ 2.1 mmol/min.
+    # Without this cap, q3h (2.6x aerobic q3l) drives rGP to ~0.149 at AC=9000, producing a
     # positive feedback loop (exercise_prod = rGP*Q1 grows with Q1) that results in explosive
-    # glucose values (38–253 mmol/L). The aerobic case is unaffected: aerobic rGP peaks at ~0.013,
+    # glucose values (38-253 mmol/L). The aerobic case is unaffected: aerobic rGP peaks at ~0.013,
     # well below the cap. See hovorka_exercise.py analysis in simulation diagnostics.
     rGP_s    = min(max(0.0, rGP), 0.025)
     tPA_s    = max(0.0, tPA)
@@ -112,31 +112,31 @@ def compute_eth_exercise_terms(
     x1_s     = max(0.0, x1)
 
     # --- Transfer functions (sigmoid-shaped) ---
-    # fY: PA detection — rises as Y accumulates, saturates at high Y
+    # fY: PA detection - rises as Y accumulates, saturates at high Y
     y_ratio  = Y_s / aY
     fY_num   = y_ratio ** n1
     fY       = fY_num / (1.0 + fY_num) if fY_num < 1e15 else 1.0
 
-    # fAC: activity intensity — switches on when AC exceeds aAC (~1000 counts)
+    # fAC: activity intensity - switches on when AC exceeds aAC (~1000 counts)
     ac_ratio = AC / aAC
     fAC_num  = ac_ratio ** n2
     fAC      = fAC_num / (1.0 + fAC_num) if fAC_num < 1e15 else 1.0
 
-    # fHI: high-intensity switch — activates near anaerobic threshold (ah ~5600 counts)
+    # fHI: high-intensity switch - activates near anaerobic threshold (ah ~5600 counts)
     ahi_ratio = AC / ah
     fHI_num   = ahi_ratio ** n2
     fHI       = fHI_num / (1.0 + fHI_num) if fHI_num < 1e15 else 1.0
 
-    # fp: anaerobic fraction — proportion of activity that is high-intensity
+    # fp: anaerobic fraction - proportion of activity that is high-intensity
     th_ratio = th_s / tp
     fp_num   = th_ratio ** n2
     fp       = fp_num / (1.0 + fp_num) if fp_num < 1e15 else 1.0
 
-    # Intensity-weighted rGP parameters: blend aerobic ↔ anaerobic based on fp
+    # Intensity-weighted rGP parameters: blend aerobic <-> anaerobic based on fp
     q3 = (1.0 - fp) * q3l + fp * q3h
     q4 = (1.0 - fp) * q4l + fp * q4h
 
-    # ft: glycogen depletion fraction — rises as cumulative exercise approaches t_depl
+    # ft: glycogen depletion fraction - rises as cumulative exercise approaches t_depl
     # t_depl is the estimated time-to-depletion given current average intensity PAint/tPA
     if tPA_s > 1e-6 and PAint_s > 1e-6:
         avg_intensity = PAint_s / tPA_s
@@ -152,40 +152,40 @@ def compute_eth_exercise_terms(
 
     # --- State derivatives ---
 
-    # Y: short-term PA insulin sensitivity accumulator (τ = tau_AC ≈ 5 min)
+    # Y: short-term PA insulin sensitivity accumulator (tau = tau_AC ~ 5 min)
     dY = (-1.0 / tau_AC) * Y_s + (1.0 / tau_AC) * AC
 
-    # Z: long-term post-exercise SI elevation — driven by fY*Y during exercise,
-    #    decays with τ = tau_Z ≈ 600 min (~10h) after exercise stops (fY → 0).
+    # Z: long-term post-exercise SI elevation - driven by fY*Y during exercise,
+    #    decays with tau = tau_Z ~ 600 min (~10h) after exercise stops (fY -> 0).
     # EXPERIMENTAL: saturation factor (1 - Z/Z_max) caps multi-day accumulation.
-    # When Z << Z_max (single session) the drive is unchanged; as Z → Z_max it shuts off.
+    # When Z << Z_max (single session) the drive is unchanged; as Z -> Z_max it shuts off.
     Z_sat_factor = max(0.0, 1.0 - Z_s / Z_max)
     dZ = b * fY * Y_s * Z_sat_factor - (1.0 - fY) / tau_Z * Z_s
 
     # rGU: exercise glucose utilization rate (rises with activity, decays after)
     drGU = q1 * fY * Y_s - q2 * rGU_s
 
-    # rGP: exercise glucose production rate (q3/q4 blend aerobic↔anaerobic via fp)
+    # rGP: exercise glucose production rate (q3/q4 blend aerobic<->anaerobic via fp)
     drGP = q3 * fY * Y_s - q4 * rGP_s
 
-    # tPA: PA tracking state — sigmoid step up when active, step down at rest
+    # tPA: PA tracking state - sigmoid step up when active, step down at rest
     dtPA = fAC - (1.0 - fAC) * tPA_s
 
     # PAint: cumulative PA intensity integral for glycogen depletion threshold
     dPAint = fAC * AC - (1.0 - fAC) * PAint_s
 
-    # rdepl: glycogen depletion rate — rises as ft approaches 1 (glycogen nearly exhausted)
+    # rdepl: glycogen depletion rate - rises as ft approaches 1 (glycogen nearly exhausted)
     #        q6 = 0 for T1D-validated aerobic; non-zero for prolonged/anaerobic (EXPERIMENTAL)
     drdepl = q6 * (ft * rm - rdepl_s)
 
-    # th: high-intensity duration accumulator — drives fp (anaerobic fraction)
+    # th: high-intensity duration accumulator - drives fp (anaerobic fraction)
     #     q5 = 0 in T1D aerobic-only data; non-zero in params_standard (EXPERIMENTAL)
     dth = fHI - (1.0 - fHI) * q5 * th_s
 
     # --- Q1 interaction terms (grafted onto Hovorka dQ1) ---
 
     # exercise_uptake: insulin-independent glucose uptake during exercise [mmol/min]
-    # Equivalent to Rashid's QE21 term but driven by rGU instead of E2²·x1.
+    # Equivalent to Rashid's QE21 term but driven by rGU instead of E2^2*x1.
     # Hard cap at 2.0 mmol/min: rGU_s * Q1_s is multiplicative in Q1, so a hyperglycaemic
     # patient with Q1 >> steady-state (~84 mmol) would otherwise produce runaway uptake that
     # crashes glucose to the floor despite L1/L2 rescue. 2.0 mmol/min is the physiological
@@ -195,12 +195,12 @@ def compute_eth_exercise_terms(
 
     # exercise_prod: net exercise EGP contribution [mmol/min]
     # rGP increases endogenous production during exercise; rdepl progressively
-    # limits it as glycogen depletes (prolonged exercise → late hypoglycemia).
+    # limits it as glycogen depletes (prolonged exercise -> late hypoglycemia).
     # Hard cap at 3.0 mmol/min: the rate coefficient rGP_s is already capped at 0.025,
     # but the product rGP_s * Q1_s remains multiplicative in Q1. A hyperglycaemic patient
-    # (Q1 >> steady-state ~84 mmol) would still produce explosive values — e.g. at Q1=200
-    # the uncapped product reaches 0.025 × 200 = 5 mmol/min. The 3.0 mmol/min ceiling is
-    # ~2.3× basal EGP and represents the physiological maximum anaerobic glycogenolysis rate.
+    # (Q1 >> steady-state ~84 mmol) would still produce explosive values - e.g. at Q1=200
+    # the uncapped product reaches 0.025 x 200 = 5 mmol/min. The 3.0 mmol/min ceiling is
+    # ~2.3x basal EGP and represents the physiological maximum anaerobic glycogenolysis rate.
     exercise_prod = min(max(0.0, rGP_s - rdepl_s) * Q1_s, 3.0)
 
     # exercise_si: post-exercise insulin sensitivity boost [mmol/min]

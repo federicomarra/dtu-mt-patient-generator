@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from src.export import ExportConfig, export_to_formats, write_chunk_to_parquet, validate_parquet_output
+from src.export import ExportConfig, write_chunk_to_parquet, validate_parquet_output
 from src.simulation import run_simulation
 from src.simulation_config import SimulationConfig
 from src.simulation_utils import create_export_directory
@@ -124,11 +124,11 @@ def generate_library_parallel(
     chunks = [c for c in chunks if c > 0]
 
     print(
-        f"\n── Parallel library generation ──────────────────────────────\n"
+        f"\n-- Parallel library generation ------------------------------\n"
         f"  target patients : {target_patients}  |  days/patient : {config.n_days}\n"
         f"  workers         : {workers_eff}  |  chunk sizes  : {chunks}\n"
         f"  random_seed     : {config.random_seed}\n"
-        f"─────────────────────────────────────────────────────────────"
+        f"-------------------------------------------------------------"
     )
 
     # Cumulative patient offsets so _worker_run can compute a globally unique seed
@@ -159,7 +159,7 @@ def generate_library_parallel(
 
     # Stream each worker result into the output parquet one chunk at a time.
     # A single ~400 MB temp file is written per worker, appended to the main
-    # parquet writer, then deleted immediately — peak disk = output file + one chunk.
+    # parquet writer, then deleted immediately - peak disk = output file + one chunk.
     import pyarrow.parquet as pq
 
     writer: pq.ParquetWriter | None = None
@@ -209,7 +209,7 @@ def generate_library_parallel(
     accepted_total = sum(accepted_per_worker_map.values())
     total_elapsed  = time.perf_counter() - t_start
 
-    # ── Final summary ──────────────────────────────────────────────
+    # -- Final summary ----------------------------------------------
     accepted_per_worker = [int(s["n_accepted"]) for s in all_stats]  # type: ignore[arg-type]
     sampled_per_worker  = [int(s["n_sampled"])   for s in all_stats]  # type: ignore[arg-type]
     rejected_per_worker = [int(s["n_rejected"])  for s in all_stats]  # type: ignore[arg-type]
@@ -221,13 +221,13 @@ def generate_library_parallel(
     rejection_rate      = (100.0 * rejected_total / sampled_total) if sampled_total else 0.0
 
     print(
-        f"\n── Summary ───────────────────────────────────────────────────\n"
+        f"\n-- Summary ---------------------------------------------------\n"
         f"  accepted / requested : {accepted_total} / {target_patients}  ({acceptance_rate:.1f}%)\n"
         f"  sampled / rejected   : {sampled_total} / {rejected_total}  (rejection {rejection_rate:.1f}%)\n"
         f"  per-worker accepted  : {accepted_per_worker}\n"
         f"  total elapsed        : {_fmt_elapsed(total_elapsed)}\n"
         f"  avg time / patient   : {avg_s_per_patient:.1f} s  (wall-clock per requested slot)\n"
-        f"─────────────────────────────────────────────────────────────"
+        f"-------------------------------------------------------------"
     )
 
     if accepted_total < target_patients * 0.8:

@@ -109,7 +109,7 @@ def find_insulin_carbo_ratio(
     target_glycemia_mmol: float = 5.5,
     measurement_time_min: int = 180,
     initial_glucose_mmol: float = 5.5,
-    tolerance_mmol: float = 0.6,  # loosened from 0.3: real patients use round-number ICRs, not ±0.3 mmol/L precision
+    tolerance_mmol: float = 0.6,  # loosened from 0.3: real patients use round-number ICRs, not +/-0.3 mmol/L precision
     max_iterations: int = 40,
     print_progress: bool = False,
 ) -> dict[str, float]:
@@ -120,7 +120,7 @@ def find_insulin_carbo_ratio(
       1. Initialize at steady-state for initial_glucose_mmol
       2. Give a fixed CHO meal (cho_grams) and a trial bolus
       3. Simulate for measurement_time_min (default 3h)
-      4. Adjust bolus via bisection until final glycemia ≈ target_glycemia_mmol
+      4. Adjust bolus via bisection until final glycemia ~ target_glycemia_mmol
 
     Parameters:
     -----------
@@ -191,7 +191,7 @@ def find_insulin_carbo_ratio(
         if err < tolerance_mmol:
             break
 
-        # If final glucose is too high → need more insulin → raise lower bound
+        # If final glucose is too high -> need more insulin -> raise lower bound
         if final_g > target_glycemia_mmol:
             bolus_low_mU = trial_bolus_mU
         else:
@@ -213,7 +213,7 @@ def find_insulin_sensitivity_factor(
     initial_glucose_mmol: float = 13.0,
     target_glycemia_mmol: float = 5.5,
     measurement_time_min: int = 180,
-    tolerance_mmol: float = 0.6,  # loosened from 0.3: real ISF estimates carry ±1-2 mmol/L/U uncertainty
+    tolerance_mmol: float = 0.6,  # loosened from 0.3: real ISF estimates carry +/-1-2 mmol/L/U uncertainty
     max_iterations: int = 40,
     print_progress: bool = False,
 ) -> dict[str, float]:
@@ -224,7 +224,7 @@ def find_insulin_sensitivity_factor(
       1. Initialize at steady-state for initial_glucose_mmol (e.g. 13 mmol/L)
       2. Give a correction bolus (no carbs)
       3. Simulate for measurement_time_min (default 2h)
-      4. Adjust bolus via bisection until final glycemia ≈ target_glycemia_mmol
+      4. Adjust bolus via bisection until final glycemia ~ target_glycemia_mmol
       5. ISF = glucose_drop / bolus_U
 
     Parameters:
@@ -279,7 +279,7 @@ def find_insulin_sensitivity_factor(
             basal_hourly=basal_hourly,
             bolus_mU=trial_bolus_mU,
             bolus_duration_min=1,
-            cho_mg=0.0,  # No carbs — pure correction
+            cho_mg=0.0,  # No carbs - pure correction
             cho_duration_min=1,
             cho_start_min=0,
         )
@@ -298,7 +298,7 @@ def find_insulin_sensitivity_factor(
         if err < tolerance_mmol:
             break
 
-        # If final glucose is still too high → need more insulin
+        # If final glucose is still too high -> need more insulin
         if final_g > target_glycemia_mmol:
             bolus_low_mU = trial_bolus_mU
         else:

@@ -54,7 +54,7 @@ def analyze_results(file_path: Path) -> None:
     
     # Auto-detect unit (mg/dL vs mmol/L).
     # mmol/L ceiling is ~33 mmol/L (instability threshold 33.3 + CGM noise).
-    # mg/dL values are always ≥18× higher; min physiological mg/dL reading >50.
+    # mg/dL values are always >=18x higher; min physiological mg/dL reading >50.
     # Threshold at 50 safely separates the two unit spaces (mirrors analyze_large.py).
     glucose_max = float(df['blood_glucose'].max())  # type: ignore[arg-type]
     is_mgdl = glucose_max > 50
@@ -94,7 +94,7 @@ def analyze_results(file_path: Path) -> None:
     in_range: int = int(((df['blood_glucose'] >= hypo_threshold) & (df['blood_glucose'] <= hyper_threshold)).sum())  # type: ignore[arg-type]
     total: int = len(df)
     
-    print(f'\n=== Glycemic Control ===')
+    print('\n=== Glycemic Control ===')
     print(f'Hypoglycemia (<{hypo_threshold:.1f}):   {hypo_count:5d}/{total} ({100*hypo_count/total:5.1f}%)')
     print(f'In Range ({hypo_threshold:.1f}-{hyper_threshold:.1f}):    {in_range:5d}/{total} ({100*in_range/total:5.1f}%)')
     print(f'Hyperglycemia (>{hyper_threshold:.1f}): {hyper_count:5d}/{total} ({100*hyper_count/total:5.1f}%)')
@@ -114,7 +114,7 @@ def analyze_results(file_path: Path) -> None:
     show_pids = all_pids[:20]
     print('\n=== Per-Patient Analysis ===')
     if len(all_pids) > 20:
-        print(f"(showing first 20 of {len(all_pids)} patients — use analyze_large.py for full cohort)")
+        print(f"(showing first 20 of {len(all_pids)} patients - use analyze_large.py for full cohort)")
     print(f"{'Patient':<8} {'Min':>7} {'Max':>7} {'Mean':>7} {'Hypo%':>7} {'Hyper%':>7}")
     print('-' * 50)
     for patient_id in show_pids:
@@ -128,7 +128,7 @@ def analyze_results(file_path: Path) -> None:
     
     # Hypo-guard analysis
     below_guard: int = int((df['blood_glucose'] <= guard_threshold).sum())  # type: ignore[arg-type]
-    print(f'\n=== Hypo-Guard Analysis ===')
+    print('\n=== Hypo-Guard Analysis ===')
     print(f'Guard threshold: {guard_threshold:.1f} {unit_str}')
     print(f'Time below guard: {below_guard}/{total} ({100*below_guard/total:.1f}%)')
     print('(When guard is active, basal insulin is suspended)')

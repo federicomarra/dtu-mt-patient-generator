@@ -17,8 +17,8 @@ from src.simulation_config import SimulationConfig
 if __name__ == "__main__":
     # Realism-knob experiment (ml/docs/SIM_REALISM.md): generate twin cohorts that
     # differ ONLY in the per-patient therapy-heterogeneity knob, identical otherwise.
-    #   --knob on  → per-patient glycaemic target + therapy mis-calibration (default)
-    #   --knob off → control cohort (every patient calibrated to one target, perfect ICR/ISF)
+    #   --knob on  -> per-patient glycaemic target + therapy mis-calibration (default)
+    #   --knob off -> control cohort (every patient calibrated to one target, perfect ICR/ISF)
     # Output filename is tagged knobon/knoboff so the two cohorts never collide.
     ap = argparse.ArgumentParser(description="parallel patient-library generation")
     ap.add_argument("--n_patients", type=int, default=2000)
@@ -61,7 +61,7 @@ if __name__ == "__main__":
     )
 
     t0 = time.perf_counter()
-    print(f"  knob={args.knob}  →  output suffix: {suffix}", flush=True)
+    print(f"  knob={args.knob}  ->  output suffix: {suffix}", flush=True)
     folder = generate_library_parallel(config, export_config, workers=workers,
                                        name_suffix=suffix)
     total_s = time.perf_counter() - t0

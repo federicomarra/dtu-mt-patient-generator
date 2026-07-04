@@ -138,7 +138,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                     values.get("cho_mg_announced", []),
                     dtype=np.float64,
                 )
-                # Deprecated scalar labels — kept for backward compat with analysis scripts.
+                # Deprecated scalar labels - kept for backward compat with analysis scripts.
                 scenario_id = values.get("scenario_id", None)  # type: ignore[assignment]
                 missed_meal_id = values.get("missed_meal_id", None)  # type: ignore[assignment]
                 late_bolus_id = values.get("late_bolus_id", None)  # type: ignore[assignment]
@@ -206,7 +206,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 cho_announced_arr = cho_ann_aligned
 
             # Each day is simulated with np.arange(0, 1441) = 1441 points.
-            # Minute 1440 duplicates the first row of the next day — drop it here
+            # Minute 1440 duplicates the first row of the next day - drop it here
             # so downstream tools never see boundary rows.
             n_rows = min(values_arr.size, 1440)
             values_arr        = values_arr[:n_rows]
@@ -247,7 +247,7 @@ def _flatten_results(results_dict: ResultsDict) -> pd.DataFrame:
                 "bolus_status": bolus_status_col,
                 "meal_size": meal_size_col,
                 "exercise_type": exercise_type_col,
-                # Deprecated scalar labels — kept for backward compat with analysis scripts.
+                # Deprecated scalar labels - kept for backward compat with analysis scripts.
                 "scenario_id": scenario_id,
                 "missed_meal_id": missed_meal_id,
                 "late_bolus_id": late_bolus_id,
@@ -352,7 +352,7 @@ def write_chunk_to_parquet(
         if col in df.columns:
             df[col] = df[col].astype("boolean")
 
-    # late_bolus_ids: list column → pyarrow infers list<null> when all entries are [].
+    # late_bolus_ids: list column -> pyarrow infers list<null> when all entries are [].
     # Build the array with an explicit element type to guarantee list<int64> schema.
     late_bolus_arr = pa.array(df["late_bolus_ids"].tolist(), type=pa.list_(pa.int64()))
     table = pa.Table.from_pandas(df.drop(columns=["late_bolus_ids"]), preserve_index=False)
@@ -370,22 +370,24 @@ def merge_parquet_chunks(
     """
     Merge sorted per-worker parquet chunks into one final parquet file.
 
-    Uses pyarrow ParquetWriter in streaming mode — only one chunk is in RAM
+    Uses pyarrow ParquetWriter in streaming mode - only one chunk is in RAM
     at a time. The temp file is renamed to output_path only after validation.
     """
     import pyarrow.parquet as pq
 
     tmp_path = output_path.with_suffix(".parquet.tmp")
     writer = None
+    schema = None
     try:
         for chunk_path in chunk_paths:
             table = pq.read_table(chunk_path)
             if writer is None:
-                writer = pq.ParquetWriter(tmp_path, table.schema)
-            else:
-                # Cast to match the writer's schema — safe guard against null-type
+                schema = table.schema
+                writer = pq.ParquetWriter(tmp_path, schema)
+            elif schema is not None:
+                # Cast to match the writer's schema - safe guard against null-type
                 # columns that arise when a chunk has all-None values for a field.
-                table = table.cast(writer.schema_arrow)
+                table = table.cast(schema)
             writer.write_table(table)
             del table
         if writer is not None:
